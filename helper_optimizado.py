@@ -336,10 +336,21 @@ def monitor_process(log_widget):
             time.sleep(1.5) 
             
             log_message("📸 Monitor: Tomando foto...", log_widget)
-            pydirectinput.keyDown(key)
+            
+            # Aseguramos el foco de la ventana clickeando en el área de ataque o pickup
+            area_focus = config.data.get("attack_area") or config.data.get("pickup_area") or config.data["monitor"].get("area")
+            if area_focus:
+                cx = (area_focus["x1"] + area_focus["x2"]) // 2
+                cy = (area_focus["y1"] + area_focus["y2"]) // 2
+                pydirectinput.moveTo(cx, cy)
+                pydirectinput.click()
+                time.sleep(0.5)
+            
+            # Usamos inyección a nivel de kernel con 'keyboard' en vez de pydirectinput
+            keyboard.press(key)
             time.sleep(0.15)
-            pydirectinput.keyUp(key)
-            time.sleep(1.0)
+            keyboard.release(key)
+            time.sleep(1.5)
             
             filename = f"inventario_{int(time.time())}.png"
             area_conf = config.data["monitor"].get("area")
@@ -351,9 +362,9 @@ def monitor_process(log_widget):
             else:
                 sct.shot(mon=-1, output=filename)
             
-            pydirectinput.keyDown(key)
+            keyboard.press(key)
             time.sleep(0.15)
-            pydirectinput.keyUp(key)
+            keyboard.release(key)
             time.sleep(0.5)
             
             # --- SEMÁFORO EN VERDE ---
