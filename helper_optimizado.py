@@ -344,8 +344,10 @@ def monitor_process(log_widget):
             cy = (btn_area["y1"] + btn_area["y2"]) // 2
             
             pydirectinput.moveTo(cx, cy)
-            time.sleep(0.1)
-            pydirectinput.click()
+            time.sleep(0.2)
+            pydirectinput.mouseDown(button='left')
+            time.sleep(0.15)
+            pydirectinput.mouseUp(button='left')
             time.sleep(1.0)
             
             filename = f"inventario_{int(time.time())}.png"
@@ -359,7 +361,9 @@ def monitor_process(log_widget):
                 sct.shot(mon=-1, output=filename)
             
             # Volver a hacer click en el mismo botón para cerrar
-            pydirectinput.click() 
+            pydirectinput.mouseDown(button='left')
+            time.sleep(0.15)
+            pydirectinput.mouseUp(button='left')
             time.sleep(0.5)
             
             # --- SEMÁFORO EN VERDE ---
