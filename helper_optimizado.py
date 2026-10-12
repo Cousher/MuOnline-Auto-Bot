@@ -336,7 +336,9 @@ def monitor_process(log_widget):
             time.sleep(1.5) 
             
             log_message("📸 Monitor: Tomando foto...", log_widget)
-            pydirectinput.press(key) 
+            pydirectinput.keyDown(key)
+            time.sleep(0.15)
+            pydirectinput.keyUp(key)
             time.sleep(1.0)
             
             filename = f"inventario_{int(time.time())}.png"
@@ -349,7 +351,9 @@ def monitor_process(log_widget):
             else:
                 sct.shot(mon=-1, output=filename)
             
-            pydirectinput.press(key) 
+            pydirectinput.keyDown(key)
+            time.sleep(0.15)
+            pydirectinput.keyUp(key)
             time.sleep(0.5)
             
             # --- SEMÁFORO EN VERDE ---
