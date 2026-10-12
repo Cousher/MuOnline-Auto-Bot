@@ -57,7 +57,8 @@ class Config:
             "monitor": {
                 "enabled": False,
                 "interval_minutes": 30,
-                "key": "v"
+                "key": "v",
+                "area": None
             }
         }
         self.load()
@@ -71,7 +72,7 @@ class Config:
         if "attack_area" not in self.data: self.data["attack_area"] = None
         if "attack_color" not in self.data: self.data["attack_color"] = {"lower": [0, 200, 200], "upper": [10, 255, 255]}
         if "telegram" not in self.data: self.data["telegram"] = {"enabled": False, "token": "", "chat_id": ""}
-        if "monitor" not in self.data: self.data["monitor"] = {"enabled": False, "interval_minutes": 30, "key": "v"}
+        if "monitor" not in self.data: self.data["monitor"] = {"enabled": False, "interval_minutes": 30, "key": "v", "area": None}
 
     def load(self):
         if os.path.exists(self.config_file):
@@ -332,16 +333,23 @@ def monitor_process(log_widget):
             # --- SEMÁFORO EN ROJO ---
             log_message("🚦 Monitor: Pausando bot para abrir inventario...", log_widget)
             bot_paused = True
-            time.sleep(1.5) # Damos tiempo a que los otros hilos suelten el mouse
+            time.sleep(1.5) 
             
             log_message("📸 Monitor: Tomando foto...", log_widget)
-            pydirectinput.press(key) # Abrir Inventario
+            pydirectinput.press(key) 
             time.sleep(1.0)
             
             filename = f"inventario_{int(time.time())}.png"
-            sct.shot(mon=-1, output=filename)
+            area_conf = config.data["monitor"].get("area")
             
-            pydirectinput.press(key) # Cerrar Inventario
+            if area_conf:
+                mon_dict = {"top": area_conf["y1"], "left": area_conf["x1"], "width": area_conf["x2"] - area_conf["x1"], "height": area_conf["y2"] - area_conf["y1"]}
+                img = np.array(sct.grab(mon_dict))
+                cv2.imwrite(filename, cv2.cvtColor(img, cv2.COLOR_BGRA2BGR))
+            else:
+                sct.shot(mon=-1, output=filename)
+            
+            pydirectinput.press(key) 
             time.sleep(0.5)
             
             # --- SEMÁFORO EN VERDE ---
@@ -520,7 +528,7 @@ def update_log(widget, msg):
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MU Online Helper - Legend V9 (Bot Telegram & Monitor)")
+        self.title("MU Online Helper - Legend V10 (Privacy Monitor)")
         self.geometry("950x850")
         self.configure(bg=MU_BG)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -598,11 +606,14 @@ class Application(tk.Tk):
         monitor_frame = tk.LabelFrame(right_frame, text=" 📸 Monitor Telegram ", **style_lf)
         monitor_frame.pack(fill=tk.X)
         self.monitor_var = tk.BooleanVar(value=config.data["monitor"]["enabled"])
-        tk.Checkbutton(monitor_frame, text="Enviar Foto Automática", variable=self.monitor_var, command=self.apply_monitor, **style_cb).pack(pady=2)
+        tk.Checkbutton(monitor_frame, text="Activar Monitor", variable=self.monitor_var, command=self.apply_monitor, **style_cb).pack(pady=2)
+        
+        self.monitor_area_button = create_mu_button(monitor_frame, "Área de Foto", self.add_monitor_area)
+        self.monitor_area_button.pack(pady=2)
         
         mon_inner = tk.Frame(monitor_frame, bg=MU_FRAME_BG)
         mon_inner.pack(pady=2)
-        tk.Label(mon_inner, text="Minutos:", bg=MU_FRAME_BG, fg=MU_FG).pack(side=tk.LEFT)
+        tk.Label(mon_inner, text="Mins:", bg=MU_FRAME_BG, fg=MU_FG).pack(side=tk.LEFT)
         self.mon_min_entry = tk.Entry(mon_inner, width=4, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG)
         self.mon_min_entry.pack(side=tk.LEFT, padx=2)
         self.mon_min_entry.insert(0, str(config.data["monitor"]["interval_minutes"]))
@@ -612,7 +623,7 @@ class Application(tk.Tk):
         self.mon_key_entry.pack(side=tk.LEFT, padx=2)
         self.mon_key_entry.insert(0, config.data["monitor"]["key"])
         
-        create_mu_button(monitor_frame, "Fijar Monitor", self.apply_monitor).pack(pady=5)
+        create_mu_button(monitor_frame, "Fijar", self.apply_monitor).pack(pady=5)
         
         # ---- ESTADÍSTICAS FRAME ----
         stats_frame = tk.LabelFrame(self, text=" 📊 Estadísticas de Farmeo ", **style_lf)
@@ -729,6 +740,10 @@ class Application(tk.Tk):
         sel = select_area(self)
         if sel: config.data["attack_area"] = sel; self.update_config_status()
 
+    def add_monitor_area(self):
+        sel = select_area(self)
+        if sel: config.data["monitor"]["area"] = sel; self.update_config_status()
+
     def apply_cooldown(self):
         try:
             config.data["cooldown"] = int(self.cooldown_entry.get())
@@ -746,6 +761,7 @@ class Application(tk.Tk):
         self.player_button.config(bg="#006400" if config.data["buff_players"] else MU_BTN_BG)
         self.pickup_area_button.config(bg="#006400" if config.data.get("pickup_area") else MU_BTN_BG)
         self.attack_area_button.config(bg="#006400" if config.data.get("attack_area") else MU_BTN_BG)
+        self.monitor_area_button.config(bg="#006400" if config.data["monitor"].get("area") else MU_BTN_BG)
 
     def on_close(self):
         stop_activity(self.log_text)
