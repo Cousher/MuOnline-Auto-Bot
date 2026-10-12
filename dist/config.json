@@ -1,0 +1,87 @@
+{
+    "buff_enabled": false,
+    "buff_skills": [],
+    "buff_players": [
+        {
+            "x1": 13,
+            "y1": 36,
+            "x2": 802,
+            "y2": 562
+        }
+    ],
+    "cooldown": 15,
+    "pickup_enabled": true,
+    "pickup_area": {
+        "x1": 11,
+        "y1": 35,
+        "x2": 804,
+        "y2": 562
+    },
+    "pickup_colors": {
+        "zen": {
+            "lower": [
+                20,
+                100,
+                100
+            ],
+            "upper": [
+                40,
+                255,
+                255
+            ],
+            "active": true
+        },
+        "firecracker": {
+            "lower": [
+                2,
+                160,
+                180
+            ],
+            "upper": [
+                22,
+                255,
+                255
+            ],
+            "active": true
+        },
+        "heart_of_love": {
+            "lower": [
+                0,
+                150,
+                170
+            ],
+            "upper": [
+                10,
+                255,
+                255
+            ],
+            "active": true
+        },
+        "medalla": {
+            "lower": [
+                20,
+                130,
+                170
+            ],
+            "upper": [
+                40,
+                230,
+                255
+            ],
+            "active": true
+        },
+        "soul": {
+            "lower": [
+                140,
+                150,
+                160
+            ],
+            "upper": [
+                160,
+                255,
+                255
+            ],
+            "active": true
+        }
+    }
+}
