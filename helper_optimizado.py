@@ -53,6 +53,11 @@ class Config:
                 "enabled": False,
                 "token": "",
                 "chat_id": ""
+            },
+            "monitor": {
+                "enabled": False,
+                "interval_minutes": 30,
+                "key": "v"
             }
         }
         self.load()
@@ -66,6 +71,7 @@ class Config:
         if "attack_area" not in self.data: self.data["attack_area"] = None
         if "attack_color" not in self.data: self.data["attack_color"] = {"lower": [0, 200, 200], "upper": [10, 255, 255]}
         if "telegram" not in self.data: self.data["telegram"] = {"enabled": False, "token": "", "chat_id": ""}
+        if "monitor" not in self.data: self.data["monitor"] = {"enabled": False, "interval_minutes": 30, "key": "v"}
 
     def load(self):
         if os.path.exists(self.config_file):
@@ -92,6 +98,20 @@ def send_telegram_async(msg):
 
 def send_telegram(msg):
     threading.Thread(target=send_telegram_async, args=(msg,), daemon=True).start()
+
+def send_telegram_photo_async(photo_path):
+    token = config.data["telegram"]["token"]
+    chat_id = config.data["telegram"]["chat_id"]
+    if token and chat_id:
+        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        try:
+            with open(photo_path, "rb") as f:
+                requests.post(url, data={"chat_id": chat_id, "caption": "📸 Estado del Inventario."}, files={"photo": f}, timeout=15)
+        except:
+            pass
+        finally:
+            try: os.remove(photo_path)
+            except: pass
 
 # ----- Configuración de Telegram (UI) -----
 class TelegramConfig(tk.Toplevel):
@@ -153,17 +173,20 @@ class TelegramConfig(tk.Toplevel):
 
 # ----- Funciones en Hilos (Lógica del Bot) -----
 running = False
+bot_paused = False # Para el semáforo de las fotos
 
 def buffing_process(log_widget, cooldown_label):
-    global running, config
+    global running, config, bot_paused
     while running:
+        if bot_paused: 
+            time.sleep(0.5); continue
         if not config.data.get("buff_enabled", True):
-            time.sleep(0.5)
-            continue
+            time.sleep(0.5); continue
+            
         start_time = time.time()
         if config.data["buff_skills"] and config.data["buff_players"]:
             for i, skill_area in enumerate(config.data["buff_skills"]):
-                if not running: break
+                if not running or bot_paused: break
                 cx = (skill_area["x1"] + skill_area["x2"]) // 2
                 cy = (skill_area["y1"] + skill_area["y2"]) // 2
                 pydirectinput.moveTo(cx, cy)
@@ -174,7 +197,7 @@ def buffing_process(log_widget, cooldown_label):
                 log_message(f"Buff: Skill {i+1} lanzado", log_widget)
                 time.sleep(0.1)
                 for j, player_area in enumerate(config.data["buff_players"]):
-                    if not running: break
+                    if not running or bot_paused: break
                     cx_p = (player_area["x1"] + player_area["x2"]) // 2
                     cy_p = (player_area["y1"] + player_area["y2"]) // 2
                     pydirectinput.moveTo(cx_p, cy_p)
@@ -196,9 +219,11 @@ def buffing_process(log_widget, cooldown_label):
             time.sleep(1)
 
 def pickup_process(log_widget):
-    global running, config, stats
+    global running, config, stats, bot_paused
     with mss.mss() as sct:
         while running:
+            if bot_paused: 
+                time.sleep(0.5); continue
             if not config.data.get("pickup_area") or not config.data.get("pickup_enabled", False):
                 time.sleep(1)
                 continue
@@ -208,10 +233,9 @@ def pickup_process(log_widget):
             bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
             hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
             clicks_to_make = []
-            # Convertimos items() a list() para evitar crashear si agregas un item desde la GUI mientras esto corre
+            
             for obj_name, obj_conf in list(config.data["pickup_colors"].items()):
                 if not obj_conf.get("active", True): continue
-                # Optimización: dtype=np.uint8 acelera enormemente la creación del array
                 lower = np.array(obj_conf["lower"], dtype=np.uint8)
                 upper = np.array(obj_conf["upper"], dtype=np.uint8)
                 mask = cv2.inRange(hsv, lower, upper)
@@ -224,17 +248,15 @@ def pickup_process(log_widget):
                     clicks_to_make.append((center_x, center_y, obj_name))
             if clicks_to_make:
                 for cx, cy, item in clicks_to_make:
-                    if not running: break
+                    if not running or bot_paused: break
                     pydirectinput.moveTo(cx, cy)
                     time.sleep(0.05)
                     pydirectinput.click(button='left')
                     log_message(f"Pickup: Recogiendo {item}", log_widget)
                     
-                    # Actualizar Estadísticas
                     if item not in stats["items"]: stats["items"][item] = 0
                     stats["items"][item] += 1
                     
-                    # Notificar Telegram
                     if config.data["telegram"]["enabled"] and config.data["pickup_colors"][item].get("notify", False):
                         elapsed = int(time.time() - stats["start_time"])
                         hrs, rem = divmod(elapsed, 3600)
@@ -249,9 +271,11 @@ def pickup_process(log_widget):
                 time.sleep(0.1)
 
 def attack_process(log_widget):
-    global running, config
+    global running, config, bot_paused
     with mss.mss() as sct:
         while running:
+            if bot_paused: 
+                time.sleep(0.5); continue
             if not config.data.get("attack_enabled", False) or not config.data.get("attack_area"):
                 time.sleep(1)
                 continue
@@ -281,6 +305,50 @@ def attack_process(log_widget):
                     break 
             if not target_found:
                 time.sleep(0.1)
+
+def monitor_process(log_widget):
+    global running, bot_paused, config
+    with mss.mss() as sct:
+        while running:
+            try:
+                interval_mins = int(config.data["monitor"].get("interval_minutes", 30))
+                enabled = config.data["monitor"].get("enabled", False)
+                key = config.data["monitor"].get("key", "v")
+            except:
+                time.sleep(5)
+                continue
+                
+            if not enabled or interval_mins <= 0:
+                time.sleep(5)
+                continue
+            
+            interval_secs = interval_mins * 60
+            for _ in range(interval_secs):
+                if not running: return
+                time.sleep(1)
+            
+            if not running: break
+            
+            # --- SEMÁFORO EN ROJO ---
+            log_message("🚦 Monitor: Pausando bot para abrir inventario...", log_widget)
+            bot_paused = True
+            time.sleep(1.5) # Damos tiempo a que los otros hilos suelten el mouse
+            
+            log_message("📸 Monitor: Tomando foto...", log_widget)
+            pydirectinput.press(key) # Abrir Inventario
+            time.sleep(1.0)
+            
+            filename = f"inventario_{int(time.time())}.png"
+            sct.shot(mon=-1, output=filename)
+            
+            pydirectinput.press(key) # Cerrar Inventario
+            time.sleep(0.5)
+            
+            # --- SEMÁFORO EN VERDE ---
+            bot_paused = False
+            log_message("🚦 Monitor: Bot reanudado.", log_widget)
+            
+            threading.Thread(target=send_telegram_photo_async, args=(filename,), daemon=True).start()
 
 # ----- Editor de Colores -----
 class ColorEditor(tk.Toplevel):
@@ -319,7 +387,6 @@ class ColorEditor(tk.Toplevel):
         self.items_to_edit["Enemigo (Ataque)"] = ("attack_color", config.data["attack_color"])
         
         for name, (dict_key, conf) in self.items_to_edit.items():
-            # Contenedor para el nombre del item y el checkbox de Telegram (si aplica)
             frame_name = tk.Frame(scrollable_frame, bg=MU_FRAME_BG)
             frame_name.grid(row=row, column=0, padx=5, pady=2, sticky="w")
             tk.Label(frame_name, text=name, font=MU_FONT, bg=MU_FRAME_BG, fg=MU_FG).pack(anchor="w")
@@ -453,7 +520,7 @@ def update_log(widget, msg):
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MU Online Helper - Legend V6 (Bot Telegram & Stats)")
+        self.title("MU Online Helper - Legend V9 (Bot Telegram & Monitor)")
         self.geometry("950x850")
         self.configure(bg=MU_BG)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -466,7 +533,6 @@ class Application(tk.Tk):
         keyboard.add_hotkey("F5", lambda: start_activity(self.log_text, self.cooldown_label))
         keyboard.add_hotkey("F6", lambda: stop_activity(self.log_text))
         
-        # Bucle de actualización de Estadísticas
         self.update_stats_ui()
 
     def create_widgets(self):
@@ -507,29 +573,46 @@ class Application(tk.Tk):
         self.pickup_objects_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=5)
         self.create_pickup_objects_ui()
 
-        # ---- ATTACK & COOLDOWN FRAME ----
+        # ---- ATTACK & COOLDOWN & MONITOR FRAME ----
         right_frame = tk.Frame(config_frame, bg=MU_BG)
         right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=8)
 
         attack_frame = tk.LabelFrame(right_frame, text=" Batalla ", **style_lf)
-        attack_frame.pack(fill=tk.X, pady=(0, 10))
-        tk.Checkbutton(attack_frame, text="Activar Combate", variable=self.attack_var, command=self.update_flags, **style_cb).pack(pady=5)
+        attack_frame.pack(fill=tk.X, pady=(0, 5))
+        tk.Checkbutton(attack_frame, text="Activar Combate", variable=self.attack_var, command=self.update_flags, **style_cb).pack(pady=2)
         self.attack_area_button = create_mu_button(attack_frame, "Zona de Caza", self.add_attack_area)
-        self.attack_area_button.pack(pady=10)
+        self.attack_area_button.pack(pady=5)
 
         cooldown_frame = tk.LabelFrame(right_frame, text=" Cooldown Auras ", **style_lf)
-        cooldown_frame.pack(fill=tk.X)
-        tk.Label(cooldown_frame, text="Segundos:", bg=MU_FRAME_BG, fg=MU_FG, font=MU_FONT).pack(pady=2)
-        
+        cooldown_frame.pack(fill=tk.X, pady=(0, 5))
         cd_inner = tk.Frame(cooldown_frame, bg=MU_FRAME_BG)
-        cd_inner.pack(pady=5)
+        cd_inner.pack(pady=2)
         self.cooldown_entry = tk.Entry(cd_inner, width=5, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG, font=MU_FONT)
         self.cooldown_entry.pack(side=tk.LEFT, padx=5)
         self.cooldown_entry.insert(0, str(config.data["cooldown"]))
-        
         create_mu_button(cd_inner, "Fijar", self.apply_cooldown).pack(side=tk.LEFT)
         self.cooldown_label = tk.Label(cooldown_frame, text="Espera: --", bg=MU_FRAME_BG, fg="#00FF00", font=MU_FONT)
-        self.cooldown_label.pack(pady=5)
+        self.cooldown_label.pack(pady=2)
+
+        # ---- MONITOR FRAME ----
+        monitor_frame = tk.LabelFrame(right_frame, text=" 📸 Monitor Telegram ", **style_lf)
+        monitor_frame.pack(fill=tk.X)
+        self.monitor_var = tk.BooleanVar(value=config.data["monitor"]["enabled"])
+        tk.Checkbutton(monitor_frame, text="Enviar Foto Automática", variable=self.monitor_var, command=self.apply_monitor, **style_cb).pack(pady=2)
+        
+        mon_inner = tk.Frame(monitor_frame, bg=MU_FRAME_BG)
+        mon_inner.pack(pady=2)
+        tk.Label(mon_inner, text="Minutos:", bg=MU_FRAME_BG, fg=MU_FG).pack(side=tk.LEFT)
+        self.mon_min_entry = tk.Entry(mon_inner, width=4, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG)
+        self.mon_min_entry.pack(side=tk.LEFT, padx=2)
+        self.mon_min_entry.insert(0, str(config.data["monitor"]["interval_minutes"]))
+        
+        tk.Label(mon_inner, text="Tecla:", bg=MU_FRAME_BG, fg=MU_FG).pack(side=tk.LEFT, padx=(5,0))
+        self.mon_key_entry = tk.Entry(mon_inner, width=3, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG)
+        self.mon_key_entry.pack(side=tk.LEFT, padx=2)
+        self.mon_key_entry.insert(0, config.data["monitor"]["key"])
+        
+        create_mu_button(monitor_frame, "Fijar Monitor", self.apply_monitor).pack(pady=5)
         
         # ---- ESTADÍSTICAS FRAME ----
         stats_frame = tk.LabelFrame(self, text=" 📊 Estadísticas de Farmeo ", **style_lf)
@@ -583,6 +666,16 @@ class Application(tk.Tk):
         config.data["attack_enabled"] = self.attack_var.get()
         self.update_config_status()
 
+    def apply_monitor(self):
+        try:
+            config.data["monitor"]["enabled"] = self.monitor_var.get()
+            config.data["monitor"]["interval_minutes"] = int(self.mon_min_entry.get())
+            config.data["monitor"]["key"] = self.mon_key_entry.get().strip().lower()
+            config.save()
+            log_message(f"Monitor configurado: Cada {config.data['monitor']['interval_minutes']}m | Tecla: '{config.data['monitor']['key']}'", self.log_text)
+        except ValueError:
+            messagebox.showerror("Error", "Los minutos deben ser un número.")
+
     def create_pickup_objects_ui(self):
         for widget in self.pickup_objects_frame.winfo_children(): widget.destroy()
             
@@ -609,7 +702,7 @@ class Application(tk.Tk):
             config.data["pickup_colors"][new_item] = {"lower": [0, 100, 100], "upper": [179, 255, 255], "active": True, "notify": True}
             config.save()
             self.create_pickup_objects_ui()
-            log_message(f"Item '{new_item}' agregado. Configúralo en la Forja de Colores.", self.log_text)
+            log_message(f"Item '{new_item}' agregado.", self.log_text)
 
     def update_pickup_object(self, name, var):
         config.data["pickup_colors"][name]["active"] = var.get()
@@ -644,6 +737,7 @@ class Application(tk.Tk):
         except: pass
 
     def save_config(self):
+        self.apply_monitor() # Forzar guardar config del monitor también
         config.save()
         log_message("Configuración guardada en el baúl (config.json)", self.log_text)
 
@@ -658,20 +752,24 @@ class Application(tk.Tk):
         self.destroy()
 
 def start_activity(log_widget, cd_label):
-    global running, buff_thread, pickup_thread, attack_thread, stats
+    global running, buff_thread, pickup_thread, attack_thread, monitor_thread, stats, bot_paused
     if not running:
         running = True
+        bot_paused = False
         stats["start_time"] = time.time()
         buff_thread = threading.Thread(target=buffing_process, args=(log_widget, cd_label), daemon=True); buff_thread.start()
         if config.data.get("pickup_enabled", False): pickup_thread = threading.Thread(target=pickup_process, args=(log_widget,), daemon=True); pickup_thread.start()
         if config.data.get("attack_enabled", False): attack_thread = threading.Thread(target=attack_process, args=(log_widget,), daemon=True); attack_thread.start()
+        monitor_thread = threading.Thread(target=monitor_process, args=(log_widget,), daemon=True); monitor_thread.start()
+        
         log_message("=== MACRO INICIADA (F5) ===", log_widget)
         if config.data["telegram"]["enabled"]: send_telegram("⚔️ Bot iniciado. Farmeo en curso...")
 
 def stop_activity(log_widget):
-    global running
+    global running, bot_paused
     if running:
         running = False
+        bot_paused = False
         log_message("=== MACRO DETENIDA (F6) ===", log_widget)
         if config.data["telegram"]["enabled"]: send_telegram("⏹ Bot detenido.")
 
