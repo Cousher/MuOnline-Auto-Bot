@@ -343,12 +343,19 @@ def monitor_process(log_widget):
             cx = (btn_area["x1"] + btn_area["x2"]) // 2
             cy = (btn_area["y1"] + btn_area["y2"]) // 2
             
+            # Mover el mouse
             pydirectinput.moveTo(cx, cy)
             time.sleep(0.2)
+            
+            # TRUCO: Micro-movimiento para forzar al juego a detectar que el mouse está "sobre" el botón (Hover)
+            pydirectinput.moveTo(cx + 1, cy + 1)
+            time.sleep(0.4)
+            
+            # Click pesado de 0.3s
             pydirectinput.mouseDown(button='left')
-            time.sleep(0.15)
+            time.sleep(0.3)
             pydirectinput.mouseUp(button='left')
-            time.sleep(1.0)
+            time.sleep(1.5)
             
             filename = f"inventario_{int(time.time())}.png"
             area_conf = config.data["monitor"].get("area")
@@ -362,7 +369,7 @@ def monitor_process(log_widget):
             
             # Volver a hacer click en el mismo botón para cerrar
             pydirectinput.mouseDown(button='left')
-            time.sleep(0.15)
+            time.sleep(0.3)
             pydirectinput.mouseUp(button='left')
             time.sleep(0.5)
             
