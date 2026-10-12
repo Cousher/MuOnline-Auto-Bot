@@ -57,7 +57,7 @@ class Config:
             "monitor": {
                 "enabled": False,
                 "interval_minutes": 30,
-                "key": "v",
+                "button_area": None,
                 "area": None
             }
         }
@@ -72,7 +72,11 @@ class Config:
         if "attack_area" not in self.data: self.data["attack_area"] = None
         if "attack_color" not in self.data: self.data["attack_color"] = {"lower": [0, 200, 200], "upper": [10, 255, 255]}
         if "telegram" not in self.data: self.data["telegram"] = {"enabled": False, "token": "", "chat_id": ""}
-        if "monitor" not in self.data: self.data["monitor"] = {"enabled": False, "interval_minutes": 30, "key": "v", "area": None}
+        if "monitor" not in self.data: self.data["monitor"] = {"enabled": False, "interval_minutes": 30, "button_area": None, "area": None}
+        
+        # Limpiar key vieja si existe
+        if "key" in self.data["monitor"]:
+            del self.data["monitor"]["key"]
 
     def load(self):
         if os.path.exists(self.config_file):
@@ -314,12 +318,12 @@ def monitor_process(log_widget):
             try:
                 interval_mins = int(config.data["monitor"].get("interval_minutes", 30))
                 enabled = config.data["monitor"].get("enabled", False)
-                key = config.data["monitor"].get("key", "v")
+                btn_area = config.data["monitor"].get("button_area")
             except:
                 time.sleep(5)
                 continue
                 
-            if not enabled or interval_mins <= 0:
+            if not enabled or interval_mins <= 0 or not btn_area:
                 time.sleep(5)
                 continue
             
@@ -335,22 +339,14 @@ def monitor_process(log_widget):
             bot_paused = True
             time.sleep(1.5) 
             
-            log_message("📸 Monitor: Tomando foto...", log_widget)
+            log_message("📸 Monitor: Click en Inventario...", log_widget)
+            cx = (btn_area["x1"] + btn_area["x2"]) // 2
+            cy = (btn_area["y1"] + btn_area["y2"]) // 2
             
-            # Aseguramos el foco de la ventana clickeando en el área de ataque o pickup
-            area_focus = config.data.get("attack_area") or config.data.get("pickup_area") or config.data["monitor"].get("area")
-            if area_focus:
-                cx = (area_focus["x1"] + area_focus["x2"]) // 2
-                cy = (area_focus["y1"] + area_focus["y2"]) // 2
-                pydirectinput.moveTo(cx, cy)
-                pydirectinput.click()
-                time.sleep(0.5)
-            
-            # Usamos inyección a nivel de kernel con 'keyboard' en vez de pydirectinput
-            keyboard.press(key)
-            time.sleep(0.15)
-            keyboard.release(key)
-            time.sleep(1.5)
+            pydirectinput.moveTo(cx, cy)
+            time.sleep(0.1)
+            pydirectinput.click()
+            time.sleep(1.0)
             
             filename = f"inventario_{int(time.time())}.png"
             area_conf = config.data["monitor"].get("area")
@@ -362,9 +358,8 @@ def monitor_process(log_widget):
             else:
                 sct.shot(mon=-1, output=filename)
             
-            keyboard.press(key)
-            time.sleep(0.15)
-            keyboard.release(key)
+            # Volver a hacer click en el mismo botón para cerrar
+            pydirectinput.click() 
             time.sleep(0.5)
             
             # --- SEMÁFORO EN VERDE ---
@@ -543,7 +538,7 @@ def update_log(widget, msg):
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MU Online Helper - Legend V10 (Privacy Monitor)")
+        self.title("MU Online Helper - Legend V13 (Smart Click Monitor)")
         self.geometry("950x850")
         self.configure(bg=MU_BG)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -623,22 +618,23 @@ class Application(tk.Tk):
         self.monitor_var = tk.BooleanVar(value=config.data["monitor"]["enabled"])
         tk.Checkbutton(monitor_frame, text="Activar Monitor", variable=self.monitor_var, command=self.apply_monitor, **style_cb).pack(pady=2)
         
-        self.monitor_area_button = create_mu_button(monitor_frame, "Área de Foto", self.add_monitor_area)
-        self.monitor_area_button.pack(pady=2)
+        btn_frames = tk.Frame(monitor_frame, bg=MU_FRAME_BG)
+        btn_frames.pack(pady=2)
+        
+        self.monitor_btn_button = create_mu_button(btn_frames, "Botón Inventario", self.add_monitor_btn_area)
+        self.monitor_btn_button.pack(side=tk.LEFT, padx=2)
+        
+        self.monitor_area_button = create_mu_button(btn_frames, "Área de Foto", self.add_monitor_area)
+        self.monitor_area_button.pack(side=tk.LEFT, padx=2)
         
         mon_inner = tk.Frame(monitor_frame, bg=MU_FRAME_BG)
         mon_inner.pack(pady=2)
-        tk.Label(mon_inner, text="Mins:", bg=MU_FRAME_BG, fg=MU_FG).pack(side=tk.LEFT)
+        tk.Label(mon_inner, text="Intervalo (Minutos):", bg=MU_FRAME_BG, fg=MU_FG).pack(side=tk.LEFT)
         self.mon_min_entry = tk.Entry(mon_inner, width=4, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG)
-        self.mon_min_entry.pack(side=tk.LEFT, padx=2)
+        self.mon_min_entry.pack(side=tk.LEFT, padx=5)
         self.mon_min_entry.insert(0, str(config.data["monitor"]["interval_minutes"]))
         
-        tk.Label(mon_inner, text="Tecla:", bg=MU_FRAME_BG, fg=MU_FG).pack(side=tk.LEFT, padx=(5,0))
-        self.mon_key_entry = tk.Entry(mon_inner, width=3, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG)
-        self.mon_key_entry.pack(side=tk.LEFT, padx=2)
-        self.mon_key_entry.insert(0, config.data["monitor"]["key"])
-        
-        create_mu_button(monitor_frame, "Fijar", self.apply_monitor).pack(pady=5)
+        create_mu_button(monitor_frame, "Fijar Intervalo", self.apply_monitor).pack(pady=5)
         
         # ---- ESTADÍSTICAS FRAME ----
         stats_frame = tk.LabelFrame(self, text=" 📊 Estadísticas de Farmeo ", **style_lf)
@@ -696,9 +692,8 @@ class Application(tk.Tk):
         try:
             config.data["monitor"]["enabled"] = self.monitor_var.get()
             config.data["monitor"]["interval_minutes"] = int(self.mon_min_entry.get())
-            config.data["monitor"]["key"] = self.mon_key_entry.get().strip().lower()
             config.save()
-            log_message(f"Monitor configurado: Cada {config.data['monitor']['interval_minutes']}m | Tecla: '{config.data['monitor']['key']}'", self.log_text)
+            log_message(f"Monitor configurado: Cada {config.data['monitor']['interval_minutes']}m", self.log_text)
         except ValueError:
             messagebox.showerror("Error", "Los minutos deben ser un número.")
 
@@ -759,6 +754,13 @@ class Application(tk.Tk):
         sel = select_area(self)
         if sel: config.data["monitor"]["area"] = sel; self.update_config_status()
 
+    def add_monitor_btn_area(self):
+        sel = select_area(self)
+        if sel: 
+            config.data["monitor"]["button_area"] = sel
+            self.update_config_status()
+            log_message("Botón de inventario marcado.", self.log_text)
+
     def apply_cooldown(self):
         try:
             config.data["cooldown"] = int(self.cooldown_entry.get())
@@ -767,7 +769,7 @@ class Application(tk.Tk):
         except: pass
 
     def save_config(self):
-        self.apply_monitor() # Forzar guardar config del monitor también
+        self.apply_monitor() 
         config.save()
         log_message("Configuración guardada en el baúl (config.json)", self.log_text)
 
@@ -777,6 +779,7 @@ class Application(tk.Tk):
         self.pickup_area_button.config(bg="#006400" if config.data.get("pickup_area") else MU_BTN_BG)
         self.attack_area_button.config(bg="#006400" if config.data.get("attack_area") else MU_BTN_BG)
         self.monitor_area_button.config(bg="#006400" if config.data["monitor"].get("area") else MU_BTN_BG)
+        self.monitor_btn_button.config(bg="#006400" if config.data["monitor"].get("button_area") else MU_BTN_BG)
 
     def on_close(self):
         stop_activity(self.log_text)
@@ -784,6 +787,11 @@ class Application(tk.Tk):
 
 def start_activity(log_widget, cd_label):
     global running, buff_thread, pickup_thread, attack_thread, monitor_thread, stats, bot_paused
+    
+    if config.data["monitor"].get("enabled", False) and not config.data["monitor"].get("button_area"):
+        log_message("❌ Error: Monitor activado pero falta marcar el 'Botón Inventario'.", log_widget)
+        return
+        
     if not running:
         running = True
         bot_paused = False
