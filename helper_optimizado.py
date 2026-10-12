@@ -234,7 +234,13 @@ def pickup_process(log_widget):
                     
                     # Notificar Telegram
                     if config.data["telegram"]["enabled"] and config.data["pickup_colors"][item].get("notify", False):
-                        send_telegram(f"💎 ¡Se ha recogido un nuevo ítem: {item.capitalize()}!\nTotal en sesión: {stats['items'][item]}")
+                        elapsed = int(time.time() - stats["start_time"])
+                        hrs, rem = divmod(elapsed, 3600)
+                        mins, secs = divmod(rem, 60)
+                        time_str = f"{hrs:02d}:{mins:02d}:{secs:02d}"
+                        items_str = "\n".join([f"🔹 {k.capitalize()}: {v}" for k, v in stats["items"].items()])
+                        msg = f"💎 ¡Nuevo ítem recogido: {item.capitalize()}!\n\n📊 REPORTE DE FARMEO:\n⏳ Tiempo: {time_str}\n{items_str}"
+                        send_telegram(msg)
                         
                     time.sleep(0.1)
             else:
