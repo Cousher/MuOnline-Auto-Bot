@@ -208,10 +208,12 @@ def pickup_process(log_widget):
             bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
             hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
             clicks_to_make = []
-            for obj_name, obj_conf in config.data["pickup_colors"].items():
+            # Convertimos items() a list() para evitar crashear si agregas un item desde la GUI mientras esto corre
+            for obj_name, obj_conf in list(config.data["pickup_colors"].items()):
                 if not obj_conf.get("active", True): continue
-                lower = np.array(obj_conf["lower"])
-                upper = np.array(obj_conf["upper"])
+                # Optimización: dtype=np.uint8 acelera enormemente la creación del array
+                lower = np.array(obj_conf["lower"], dtype=np.uint8)
+                upper = np.array(obj_conf["upper"], dtype=np.uint8)
                 mask = cv2.inRange(hsv, lower, upper)
                 contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 for cnt in contours:
@@ -259,8 +261,8 @@ def attack_process(log_widget):
             bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
             hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
             color_conf = config.data["attack_color"]
-            lower = np.array(color_conf["lower"])
-            upper = np.array(color_conf["upper"])
+            lower = np.array(color_conf["lower"], dtype=np.uint8)
+            upper = np.array(color_conf["upper"], dtype=np.uint8)
             mask = cv2.inRange(hsv, lower, upper)
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             target_found = False
