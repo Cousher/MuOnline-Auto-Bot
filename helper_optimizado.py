@@ -6,17 +6,24 @@ import numpy as np
 import pydirectinput
 import keyboard
 import mss
+import requests
 
 # --- PALETA MU ONLINE ---
-MU_BG = "#0A0A0A"          # Fondo principal casi negro
-MU_FRAME_BG = "#151515"    # Fondo de los paneles
-MU_FG = "#E6CC80"          # Texto dorado clásico
-MU_BTN_BG = "#4A0000"      # Rojo oscuro (sangre)
-MU_BTN_FG = "#FFEA8C"      # Texto de botón dorado claro
+MU_BG = "#0A0A0A"          
+MU_FRAME_BG = "#151515"    
+MU_FG = "#E6CC80"          
+MU_BTN_BG = "#4A0000"      
+MU_BTN_FG = "#FFEA8C"      
 MU_FONT = ("Helvetica", 10, "bold")
-MU_TITLE_FONT = ("Georgia", 14, "bold") # Serif da toque más épico/medieval
+MU_TITLE_FONT = ("Georgia", 14, "bold") 
 MU_LIST_BG = "#222222"
 MU_ACCENT = "#2b0000"
+
+# ----- Estadísticas de Farmeo -----
+stats = {
+    "start_time": None,
+    "items": {}
+}
 
 # ----- Configuración y Guardado -----
 class Config:
@@ -30,32 +37,35 @@ class Config:
             "pickup_enabled": False,
             "pickup_area": None,
             "pickup_colors": {
-                "zen": {"lower": [20, 100, 100], "upper": [40, 255, 255], "active": True},
-                "firecracker": {"lower": [2, 160, 180], "upper": [22, 255, 255], "active": True},
-                "heart_of_love": {"lower": [0, 150, 170], "upper": [10, 255, 255], "active": True},
-                "medalla": {"lower": [20, 130, 170], "upper": [40, 230, 255], "active": True},
-                "soul": {"lower": [140, 150, 160], "upper": [160, 255, 255], "active": True}
+                "zen": {"lower": [20, 100, 100], "upper": [40, 255, 255], "active": True, "notify": False},
+                "firecracker": {"lower": [2, 160, 180], "upper": [22, 255, 255], "active": True, "notify": True},
+                "heart_of_love": {"lower": [0, 150, 170], "upper": [10, 255, 255], "active": True, "notify": True},
+                "medalla": {"lower": [20, 130, 170], "upper": [40, 230, 255], "active": True, "notify": True},
+                "soul": {"lower": [140, 150, 160], "upper": [160, 255, 255], "active": True, "notify": True}
             },
             "attack_enabled": False,
             "attack_area": None,
             "attack_color": {
                 "lower": [0, 200, 200], 
                 "upper": [10, 255, 255]
+            },
+            "telegram": {
+                "enabled": False,
+                "token": "",
+                "chat_id": ""
             }
         }
         self.load()
         
         if "pickup_colors" in self.data:
             for key, value in self.data["pickup_colors"].items():
-                if "active" not in value:
-                    self.data["pickup_colors"][key]["active"] = True
+                if "active" not in value: self.data["pickup_colors"][key]["active"] = True
+                if "notify" not in value: self.data["pickup_colors"][key]["notify"] = (key != "zen")
                     
-        if "attack_enabled" not in self.data:
-            self.data["attack_enabled"] = False
-        if "attack_area" not in self.data:
-            self.data["attack_area"] = None
-        if "attack_color" not in self.data:
-            self.data["attack_color"] = {"lower": [0, 200, 200], "upper": [10, 255, 255]}
+        if "attack_enabled" not in self.data: self.data["attack_enabled"] = False
+        if "attack_area" not in self.data: self.data["attack_area"] = None
+        if "attack_color" not in self.data: self.data["attack_color"] = {"lower": [0, 200, 200], "upper": [10, 255, 255]}
+        if "telegram" not in self.data: self.data["telegram"] = {"enabled": False, "token": "", "chat_id": ""}
 
     def load(self):
         if os.path.exists(self.config_file):
@@ -68,6 +78,78 @@ class Config:
             json.dump(self.data, f, indent=4)
 
 config = Config()
+
+# ----- Funciones Telegram -----
+def send_telegram_async(msg):
+    token = config.data["telegram"]["token"]
+    chat_id = config.data["telegram"]["chat_id"]
+    if token and chat_id:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        try:
+            requests.post(url, data={"chat_id": chat_id, "text": msg}, timeout=5)
+        except:
+            pass
+
+def send_telegram(msg):
+    threading.Thread(target=send_telegram_async, args=(msg,), daemon=True).start()
+
+# ----- Configuración de Telegram (UI) -----
+class TelegramConfig(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("📱 Notificaciones Telegram")
+        self.geometry("450x350")
+        self.configure(bg=MU_BG)
+        self.grab_set()
+
+        tk.Label(self, text="CONFIGURACIÓN DE TELEGRAM", font=MU_TITLE_FONT, bg=MU_BG, fg=MU_FG).pack(pady=10)
+        
+        info = "1. Busca a @BotFather en Telegram y crea un bot.\n2. Copia el Token aquí.\n3. Busca a @userinfobot para obtener tu Chat ID."
+        tk.Label(self, text=info, bg=MU_BG, fg="#AAAAAA", justify=tk.LEFT).pack(pady=5)
+
+        self.enabled_var = tk.BooleanVar(value=config.data["telegram"]["enabled"])
+        tk.Checkbutton(self, text="Activar Notificaciones", variable=self.enabled_var, bg=MU_BG, fg=MU_FG, selectcolor=MU_ACCENT).pack(pady=5)
+
+        tk.Label(self, text="Bot Token:", bg=MU_BG, fg=MU_FG).pack(anchor="w", padx=20)
+        self.token_entry = tk.Entry(self, width=50, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG)
+        self.token_entry.pack(padx=20, pady=2)
+        self.token_entry.insert(0, config.data["telegram"]["token"])
+
+        tk.Label(self, text="Tu Chat ID:", bg=MU_BG, fg=MU_FG).pack(anchor="w", padx=20)
+        self.chatid_entry = tk.Entry(self, width=30, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG)
+        self.chatid_entry.pack(padx=20, pady=2, anchor="w")
+        self.chatid_entry.insert(0, config.data["telegram"]["chat_id"])
+
+        btn_frame = tk.Frame(self, bg=MU_BG)
+        btn_frame.pack(pady=20)
+        
+        create_mu_button(btn_frame, "Probar Mensaje", self.test_message, bg="#006400").pack(side=tk.LEFT, padx=10)
+        create_mu_button(btn_frame, "Guardar", self.save_config).pack(side=tk.LEFT, padx=10)
+
+    def test_message(self):
+        token = self.token_entry.get().strip()
+        chat_id = self.chatid_entry.get().strip()
+        if not token or not chat_id:
+            messagebox.showwarning("Faltan datos", "Completa el Token y el Chat ID.")
+            return
+        
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        try:
+            res = requests.post(url, data={"chat_id": chat_id, "text": "¡Hola! 🤖 Las notificaciones de tu Bot de MU Online están funcionando correctamente."})
+            if res.status_code == 200:
+                messagebox.showinfo("Éxito", "Mensaje de prueba enviado. Revisa tu Telegram.")
+            else:
+                messagebox.showerror("Error", f"Fallo al enviar: {res.text}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error de conexión: {str(e)}")
+
+    def save_config(self):
+        config.data["telegram"]["enabled"] = self.enabled_var.get()
+        config.data["telegram"]["token"] = self.token_entry.get().strip()
+        config.data["telegram"]["chat_id"] = self.chatid_entry.get().strip()
+        config.save()
+        messagebox.showinfo("Guardado", "Configuración de Telegram guardada.")
+        self.destroy()
 
 # ----- Funciones en Hilos (Lógica del Bot) -----
 running = False
@@ -114,7 +196,7 @@ def buffing_process(log_widget, cooldown_label):
             time.sleep(1)
 
 def pickup_process(log_widget):
-    global running, config
+    global running, config, stats
     with mss.mss() as sct:
         while running:
             if not config.data.get("pickup_area") or not config.data.get("pickup_enabled", False):
@@ -145,6 +227,15 @@ def pickup_process(log_widget):
                     time.sleep(0.05)
                     pydirectinput.click(button='left')
                     log_message(f"Pickup: Recogiendo {item}", log_widget)
+                    
+                    # Actualizar Estadísticas
+                    if item not in stats["items"]: stats["items"][item] = 0
+                    stats["items"][item] += 1
+                    
+                    # Notificar Telegram
+                    if config.data["telegram"]["enabled"] and config.data["pickup_colors"][item].get("notify", False):
+                        send_telegram(f"💎 ¡Se ha recogido un nuevo ítem: {item.capitalize()}!\nTotal en sesión: {stats['items'][item]}")
+                        
                     time.sleep(0.1)
             else:
                 time.sleep(0.1)
@@ -188,7 +279,7 @@ class ColorEditor(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Forja de Colores (HSV)")
-        self.geometry("640x500")
+        self.geometry("700x500")
         self.configure(bg=MU_BG)
         self.grab_set() 
         
@@ -209,18 +300,26 @@ class ColorEditor(tk.Toplevel):
         scrollbar.pack(side="right", fill="y", pady=5)
         
         row = 0
-        headers = ["Item", "Preview", "Mínimo (H,S,V)", "Máximo (H,S,V)"]
+        headers = ["Item", "Preview", "Mínimo (H,S,V)", "Máximo (H,S,V)", "Acción"]
         for col, text in enumerate(headers):
             tk.Label(scrollable_frame, text=text, font=MU_FONT, bg=MU_FRAME_BG, fg="#FFFFFF").grid(row=row, column=col, padx=5, pady=5)
         row += 1
         
         self.items_to_edit = {}
         for k, v in config.data["pickup_colors"].items():
-            self.items_to_edit[f"Joya: {k}"] = v
-        self.items_to_edit["Enemigo (Ataque)"] = config.data["attack_color"]
+            self.items_to_edit[f"Joya: {k}"] = (k, v)
+        self.items_to_edit["Enemigo (Ataque)"] = ("attack_color", config.data["attack_color"])
         
-        for name, conf in self.items_to_edit.items():
-            tk.Label(scrollable_frame, text=name, font=MU_FONT, bg=MU_FRAME_BG, fg=MU_FG).grid(row=row, column=0, padx=5, pady=2, sticky="w")
+        for name, (dict_key, conf) in self.items_to_edit.items():
+            # Contenedor para el nombre del item y el checkbox de Telegram (si aplica)
+            frame_name = tk.Frame(scrollable_frame, bg=MU_FRAME_BG)
+            frame_name.grid(row=row, column=0, padx=5, pady=2, sticky="w")
+            tk.Label(frame_name, text=name, font=MU_FONT, bg=MU_FRAME_BG, fg=MU_FG).pack(anchor="w")
+            
+            notify_var = None
+            if "Pickup" in dict_key or "Joya" in name:
+                notify_var = tk.BooleanVar(value=conf.get("notify", False))
+                tk.Checkbutton(frame_name, text="📱 Telegram", variable=notify_var, bg=MU_FRAME_BG, fg="#00FF00", selectcolor=MU_ACCENT).pack(anchor="w")
             
             preview = tk.Label(scrollable_frame, text="      ", relief="sunken", width=6, borderwidth=2)
             preview.grid(row=row, column=1, padx=5, pady=2)
@@ -241,7 +340,7 @@ class ColorEditor(tk.Toplevel):
                             command=lambda n=name, l=(hl,sl,vl), u=(hu,su,vu), p=preview: self.pick_color(n, l, u, p))
             btn.grid(row=row, column=4, padx=5, pady=2)
             
-            self.entries[name] = {"lower": (hl,sl,vl), "upper": (hu,su,vu), "preview": preview, "conf_ref": conf}
+            self.entries[name] = {"lower": (hl,sl,vl), "upper": (hu,su,vu), "preview": preview, "conf_ref": conf, "notify_var": notify_var}
             
             for e in (hl,sl,vl,hu,su,vu):
                 e.bind("<KeyRelease>", lambda event, p=preview, l=(hl,sl,vl), u=(hu,su,vu): self.update_preview(p, l, u))
@@ -289,6 +388,8 @@ class ColorEditor(tk.Toplevel):
                 hu, su, vu = int(data["upper"][0].get()), int(data["upper"][1].get()), int(data["upper"][2].get())
                 data["conf_ref"]["lower"] = [hl, sl, vl]
                 data["conf_ref"]["upper"] = [hu, su, vu]
+                if data["notify_var"]:
+                    data["conf_ref"]["notify"] = data["notify_var"].get()
             config.save()
             messagebox.showinfo("Guardado", "¡Colores forjados exitosamente!")
             self.destroy()
@@ -344,8 +445,8 @@ def update_log(widget, msg):
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MU Online Helper - Legend V5")
-        self.geometry("950x700")
+        self.title("MU Online Helper - Legend V6 (Bot Telegram & Stats)")
+        self.geometry("950x850")
         self.configure(bg=MU_BG)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
@@ -356,16 +457,17 @@ class Application(tk.Tk):
         self.create_widgets()
         keyboard.add_hotkey("F5", lambda: start_activity(self.log_text, self.cooldown_label))
         keyboard.add_hotkey("F6", lambda: stop_activity(self.log_text))
+        
+        # Bucle de actualización de Estadísticas
+        self.update_stats_ui()
 
     def create_widgets(self):
-        # Título
         title_lbl = tk.Label(self, text="⚔️ MU ONLINE AUTO-HELPER ⚔️", font=("Georgia", 16, "bold"), bg=MU_BG, fg=MU_FG)
-        title_lbl.pack(pady=15)
+        title_lbl.pack(pady=10)
 
         config_frame = tk.Frame(self, bg=MU_BG)
         config_frame.pack(side=tk.TOP, fill=tk.X, padx=15, pady=5)
 
-        # Estilo para LabelFrames
         style_lf = {"bg": MU_FRAME_BG, "fg": MU_FG, "font": MU_FONT, "bd": 2, "relief": "ridge"}
         style_cb = {"bg": MU_FRAME_BG, "fg": MU_FG, "font": MU_FONT, "selectcolor": MU_ACCENT, "activebackground": MU_FRAME_BG, "activeforeground": MU_FG}
 
@@ -420,23 +522,52 @@ class Application(tk.Tk):
         create_mu_button(cd_inner, "Fijar", self.apply_cooldown).pack(side=tk.LEFT)
         self.cooldown_label = tk.Label(cooldown_frame, text="Espera: --", bg=MU_FRAME_BG, fg="#00FF00", font=MU_FONT)
         self.cooldown_label.pack(pady=5)
+        
+        # ---- ESTADÍSTICAS FRAME ----
+        stats_frame = tk.LabelFrame(self, text=" 📊 Estadísticas de Farmeo ", **style_lf)
+        stats_frame.pack(fill=tk.X, padx=15, pady=5)
+        
+        self.time_lbl = tk.Label(stats_frame, text="⏳ Tiempo Farmeando: 00:00:00", bg=MU_FRAME_BG, fg="#00FFFF", font=("Consolas", 11, "bold"))
+        self.time_lbl.pack(pady=2)
+        
+        self.items_lbl = tk.Label(stats_frame, text="Esperando inicio...", bg=MU_FRAME_BG, fg=MU_FG, font=("Consolas", 10))
+        self.items_lbl.pack(pady=2)
 
         # ---- CONSOLA LOG ----
         self.log_text = tk.Text(self, height=8, bg=MU_LIST_BG, fg="#00FF00", font=("Consolas", 10), bd=2, relief="sunken")
-        self.log_text.pack(fill=tk.BOTH, padx=20, pady=10, expand=True)
+        self.log_text.pack(fill=tk.BOTH, padx=15, pady=5, expand=True)
         self.log_text.insert(tk.END, ">>> Sistema en línea. Listo para la batalla.\n")
         self.log_text.config(state=tk.DISABLED)
 
         # ---- BOTONES GLOBALES ----
         bottom_frame = tk.Frame(self, bg=MU_BG)
-        bottom_frame.pack(side=tk.BOTTOM, pady=15)
+        bottom_frame.pack(side=tk.BOTTOM, pady=10)
         
-        create_mu_button(bottom_frame, "💾 Guardar Perfil", self.save_config).pack(side=tk.LEFT, padx=10)
-        create_mu_button(bottom_frame, "🎨 Forja de Colores", lambda: ColorEditor(self), bg="#8B6508").pack(side=tk.LEFT, padx=10)
-        create_mu_button(bottom_frame, "▶ INICIAR (F5)", lambda: start_activity(self.log_text, self.cooldown_label), bg="#006400").pack(side=tk.LEFT, padx=10)
-        create_mu_button(bottom_frame, "⏹ DETENER (F6)", lambda: stop_activity(self.log_text), bg="#8B0000").pack(side=tk.LEFT, padx=10)
+        create_mu_button(bottom_frame, "💾 Guardar Perfil", self.save_config).pack(side=tk.LEFT, padx=5)
+        create_mu_button(bottom_frame, "🎨 Forja de Colores", lambda: ColorEditor(self), bg="#8B6508").pack(side=tk.LEFT, padx=5)
+        create_mu_button(bottom_frame, "📱 Telegram", lambda: TelegramConfig(self), bg="#1d5f8c").pack(side=tk.LEFT, padx=5)
+        create_mu_button(bottom_frame, "▶ INICIAR (F5)", lambda: start_activity(self.log_text, self.cooldown_label), bg="#006400").pack(side=tk.LEFT, padx=5)
+        create_mu_button(bottom_frame, "⏹ DETENER (F6)", lambda: stop_activity(self.log_text), bg="#8B0000").pack(side=tk.LEFT, padx=5)
 
         self.update_config_status()
+
+    def update_stats_ui(self):
+        global stats, running
+        if running and stats["start_time"]:
+            elapsed = int(time.time() - stats["start_time"])
+            hrs, rem = divmod(elapsed, 3600)
+            mins, secs = divmod(rem, 60)
+            self.time_lbl.config(text=f"⏳ Tiempo Farmeando: {hrs:02d}:{mins:02d}:{secs:02d}")
+            
+            if stats["items"]:
+                items_str = " | ".join([f"{k.capitalize()}: {v}" for k, v in stats["items"].items()])
+                self.items_lbl.config(text=items_str)
+            else:
+                self.items_lbl.config(text="Buscando joyas...")
+        elif not running:
+            self.time_lbl.config(text="⏳ Sistema Detenido")
+            
+        self.after(1000, self.update_stats_ui)
 
     def update_flags(self):
         config.data["buff_enabled"] = self.buff_var.get()
@@ -467,7 +598,7 @@ class Application(tk.Tk):
             if new_item in config.data["pickup_colors"]:
                 messagebox.showwarning("Atención", "Esa joya ya existe en tu inventario.")
                 return
-            config.data["pickup_colors"][new_item] = {"lower": [0, 100, 100], "upper": [179, 255, 255], "active": True}
+            config.data["pickup_colors"][new_item] = {"lower": [0, 100, 100], "upper": [179, 255, 255], "active": True, "notify": True}
             config.save()
             self.create_pickup_objects_ui()
             log_message(f"Item '{new_item}' agregado. Configúralo en la Forja de Colores.", self.log_text)
@@ -519,19 +650,22 @@ class Application(tk.Tk):
         self.destroy()
 
 def start_activity(log_widget, cd_label):
-    global running, buff_thread, pickup_thread, attack_thread
+    global running, buff_thread, pickup_thread, attack_thread, stats
     if not running:
         running = True
+        stats["start_time"] = time.time()
         buff_thread = threading.Thread(target=buffing_process, args=(log_widget, cd_label), daemon=True); buff_thread.start()
         if config.data.get("pickup_enabled", False): pickup_thread = threading.Thread(target=pickup_process, args=(log_widget,), daemon=True); pickup_thread.start()
         if config.data.get("attack_enabled", False): attack_thread = threading.Thread(target=attack_process, args=(log_widget,), daemon=True); attack_thread.start()
         log_message("=== MACRO INICIADA (F5) ===", log_widget)
+        if config.data["telegram"]["enabled"]: send_telegram("⚔️ Bot iniciado. Farmeo en curso...")
 
 def stop_activity(log_widget):
     global running
     if running:
         running = False
         log_message("=== MACRO DETENIDA (F6) ===", log_widget)
+        if config.data["telegram"]["enabled"]: send_telegram("⏹ Bot detenido.")
 
 if __name__ == "__main__":
     app = Application()
