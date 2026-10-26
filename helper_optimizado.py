@@ -423,16 +423,59 @@ def preprocess_coords_image(img, thresh_val=150, invert=True):
     _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
     return thresh
 
-def parse_coordinates(raw_text):
-    nums = [int(n) for n in re.findall(r'\d+', raw_text) if 0 <= int(n) <= 255]
-    if len(nums) >= 2:
-        return nums[0], nums[1]
-    return None
+def find_split_x_and_clean(thresh):
+    """
+    Limpia manchas de los bordes y encuentra el punto exacto de separación (canal blanco)
+    entre la coordenada X (izquierda) y la coordenada Y (derecha).
+    """
+    h, w = thresh.shape
+    cleaned = thresh.copy()
+    
+    # En la imagen binarizada de Tesseract: fondo = 255 (blanco), dígitos = 0 (negro)
+    fg = (255 - cleaned)
+    num_labels, labels, stats_cc, centroids = cv2.connectedComponentsWithStats(fg, connectivity=8)
+    
+    valid_boxes = []
+    for i in range(1, num_labels):
+        x, y, bw, bh, area = stats_cc[i]
+        touches_border = (x <= 2) or (y <= 2) or (x + bw >= w - 2) or (y + bh >= h - 2)
+        # Si toca el borde, o no tiene altura/ancho de dígito normal, lo borramos a blanco
+        if touches_border or area < 15 or bh < h * 0.25 or bw > w * 0.35:
+            cleaned[labels == i] = 255
+        else:
+            valid_boxes.append((x, y, bw, bh))
+            
+    valid_boxes.sort(key=lambda b: b[0])
+    
+    # Si hay al menos 2 bloques de dígitos, buscamos el espacio horizontal más grande entre ellos
+    if len(valid_boxes) >= 2:
+        max_gap = -999
+        split_x = w // 2
+        curr_right = valid_boxes[0][0] + valid_boxes[0][2]
+        for idx in range(len(valid_boxes) - 1):
+            curr_right = max(curr_right, valid_boxes[idx][0] + valid_boxes[idx][2])
+            next_left = valid_boxes[idx + 1][0]
+            gap = next_left - curr_right
+            if gap > max_gap:
+                max_gap = gap
+                split_x = (curr_right + next_left) // 2
+        if max_gap >= 4:
+            return cleaned, split_x
+
+    # Fallback: buscar la columna más blanca en el tercio central de la imagen
+    c_start = int(w * 0.25)
+    c_end = int(w * 0.75)
+    if c_end > c_start:
+        col_ink = np.sum(cleaned[:, c_start:c_end] == 0, axis=0)
+        split_x = c_start + int(np.argmin(col_ink))
+    else:
+        split_x = w // 2
+    return cleaned, split_x
 
 def read_coords_from_screen(sct):
     area = config.data["coords"].get("area")
     if not area or not TESSERACT_PATH:
-        return None, "", None, None
+        return None, "", None, None, None
     mon_dict = {
         "top": area["y1"],
         "left": area["x1"],
@@ -442,15 +485,49 @@ def read_coords_from_screen(sct):
     img = np.array(sct.grab(mon_dict), dtype=np.uint8)
     thresh_val = int(config.data["coords"].get("threshold", 150))
     invert = bool(config.data["coords"].get("invert", True))
-    thresh = preprocess_coords_image(img, thresh_val, invert)
+    raw_thresh = preprocess_coords_image(img, thresh_val, invert)
     
-    custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789\ ,/-:'
+    thresh, split_x = find_split_x_and_clean(raw_thresh)
+    
+    custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
     try:
-        raw_text = pytesseract.image_to_string(thresh, config=custom_config).strip()
-        coords = parse_coordinates(raw_text)
-        return coords, raw_text, img, thresh
+        # 1. Pasamos la imagen completa a Tesseract (mejor contexto de línea) y separamos cada dígito según su posición respecto a split_x
+        boxes_str = pytesseract.image_to_boxes(raw_thresh, config=custom_config).strip()
+        left_chars = []
+        right_chars = []
+        for line in boxes_str.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[0].isdigit():
+                ch = parts[0]
+                x1, x2 = int(parts[1]), int(parts[3])
+                # Para el primer o último dígito que Tesseract suele expandir al borde, usamos el borde interno
+                center_x = x2 - 5 if x1 <= 2 else (x1 + 5 if x2 >= raw_thresh.shape[1] - 2 else (x1 + x2) // 2)
+                if center_x < split_x:
+                    left_chars.append(ch)
+                else:
+                    right_chars.append(ch)
+                    
+        digits_x = "".join(left_chars)
+        digits_y = "".join(right_chars)
+        
+        # 2. Fallback por mitades separadas si image_to_boxes no detectó ambos lados
+        if not (digits_x and digits_y):
+            left_part = cv2.copyMakeBorder(thresh[:, :split_x], 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
+            right_part = cv2.copyMakeBorder(thresh[:, split_x:], 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
+            if not digits_x:
+                digits_x = "".join(re.findall(r'\d+', pytesseract.image_to_string(left_part, config=custom_config)))
+            if not digits_y:
+                digits_y = "".join(re.findall(r'\d+', pytesseract.image_to_string(right_part, config=custom_config)))
+                
+        raw_text = f"{digits_x} | {digits_y}"
+        
+        if digits_x and digits_y:
+            cx, cy = int(digits_x), int(digits_y)
+            if 0 <= cx <= 255 and 0 <= cy <= 255:
+                return (cx, cy), raw_text, img, thresh, split_x
+        return None, raw_text, img, thresh, split_x
     except Exception:
-        return None, "", img, thresh
+        return None, "", img, thresh, split_x
 
 def coords_process(log_widget):
     global running, bot_paused, config, stats
@@ -465,7 +542,7 @@ def coords_process(log_widget):
                 time.sleep(5.0)
                 continue
                 
-            coords, raw_text, _, _ = read_coords_from_screen(sct)
+            coords, raw_text, _, _, _ = read_coords_from_screen(sct)
             if coords:
                 stats["current_coords"] = coords
                 if stats["spot_coords"] is None:
@@ -513,12 +590,17 @@ def calibrate_coords_window(log_widget):
                 config.data["coords"]["threshold"] = t_val
                 config.data["coords"]["invert"] = inv_val
                 
-                coords, raw_text, img, thresh = read_coords_from_screen(sct)
+                coords, raw_text, img, thresh, split_x = read_coords_from_screen(sct)
                 
                 if img is not None and thresh is not None:
                     img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
                     img_resized = cv2.resize(img_bgr, (thresh.shape[1], thresh.shape[0]))
                     thresh_bgr = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+                    
+                    # Dibujamos la línea divisoria inteligente entre X e Y
+                    if split_x is not None:
+                        cv2.line(img_resized, (split_x, 0), (split_x, img_resized.shape[0]), (255, 200, 0), 2)
+                        cv2.line(thresh_bgr, (split_x, 0), (split_x, thresh_bgr.shape[0]), (255, 0, 0), 2)
                     
                     combined = np.vstack([img_resized, thresh_bgr])
                     
@@ -531,7 +613,7 @@ def calibrate_coords_window(log_widget):
                     status_color = (0, 255, 0) if coords else (0, 165, 255)
                     parsed_str = f"X={coords[0]} | Y={coords[1]}" if coords else "Sin detectar (Ajusta Umbral)"
                     
-                    cv2.putText(info_panel, f"OCR Crudo: '{raw_text}'", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+                    cv2.putText(info_panel, f"OCR Mitades: '{raw_text}'", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
                     cv2.putText(info_panel, f"Detectado: {parsed_str}", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2)
                     
                     final_view = np.vstack([combined, info_panel])
@@ -717,7 +799,7 @@ def update_log(widget, msg):
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MU Online Helper - Legend V16 (OCR Coordinates & Navigation Test)")
+        self.title("MU Online Helper - Legend V17 (Smart Split OCR)")
         self.geometry("980x900")
         self.configure(bg=MU_BG)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
