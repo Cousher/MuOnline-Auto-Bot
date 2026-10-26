@@ -4,3 +4,4 @@ mss
 pydirectinput
 keyboard
 requests
+pytesseract

@@ -1,12 +1,36 @@
 import tkinter as tk
 from tkinter import messagebox, colorchooser, simpledialog
-import threading, time, json, os
+import threading, time, json, os, sys, re, shutil
 import cv2
 import numpy as np
 import pydirectinput
 import keyboard
 import mss
 import requests
+import pytesseract
+
+# ----- Detección Inteligente de Tesseract-OCR -----
+def setup_tesseract():
+    if getattr(sys, 'frozen', False):
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+
+    candidates = [
+        os.path.join(base_path, 'Tesseract-OCR', 'tesseract.exe'),
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+        os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Tesseract-OCR', 'tesseract.exe'),
+        os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Tesseract-OCR', 'tesseract.exe'),
+        shutil.which('tesseract')
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            pytesseract.pytesseract.tesseract_cmd = path
+            return path
+    return None
+
+TESSERACT_PATH = setup_tesseract()
 
 # --- PALETA MU ONLINE ---
 MU_BG = "#0A0A0A"          
@@ -22,7 +46,9 @@ MU_ACCENT = "#2b0000"
 # ----- Estadísticas de Farmeo -----
 stats = {
     "start_time": None,
-    "items": {}
+    "items": {},
+    "current_coords": None,
+    "spot_coords": None
 }
 
 # ----- Configuración y Guardado -----
@@ -59,6 +85,12 @@ class Config:
                 "interval_minutes": 30,
                 "button_area": None,
                 "area": None
+            },
+            "coords": {
+                "enabled": False,
+                "area": None,
+                "threshold": 150,
+                "invert": True
             }
         }
         self.load()
@@ -73,6 +105,9 @@ class Config:
         if "attack_color" not in self.data: self.data["attack_color"] = {"lower": [0, 200, 200], "upper": [10, 255, 255]}
         if "telegram" not in self.data: self.data["telegram"] = {"enabled": False, "token": "", "chat_id": ""}
         if "monitor" not in self.data: self.data["monitor"] = {"enabled": False, "interval_minutes": 30, "button_area": None, "area": None}
+        if "coords" not in self.data: self.data["coords"] = {"enabled": False, "area": None, "threshold": 150, "invert": True}
+        if "threshold" not in self.data["coords"]: self.data["coords"]["threshold"] = 150
+        if "invert" not in self.data["coords"]: self.data["coords"]["invert"] = True
         
         # Limpiar key vieja si existe
         if "key" in self.data["monitor"]:
@@ -379,6 +414,139 @@ def monitor_process(log_widget):
             
             threading.Thread(target=send_telegram_photo_async, args=(filename,), daemon=True).start()
 
+# ----- Lector de Coordenadas (OCR) -----
+def preprocess_coords_image(img, thresh_val=150, invert=True):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+    gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    if invert:
+        gray = cv2.bitwise_not(gray)
+    _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
+    return thresh
+
+def parse_coordinates(raw_text):
+    nums = [int(n) for n in re.findall(r'\d+', raw_text) if 0 <= int(n) <= 255]
+    if len(nums) >= 2:
+        return nums[0], nums[1]
+    return None
+
+def read_coords_from_screen(sct):
+    area = config.data["coords"].get("area")
+    if not area or not TESSERACT_PATH:
+        return None, "", None, None
+    mon_dict = {
+        "top": area["y1"],
+        "left": area["x1"],
+        "width": max(1, area["x2"] - area["x1"]),
+        "height": max(1, area["y2"] - area["y1"])
+    }
+    img = np.array(sct.grab(mon_dict), dtype=np.uint8)
+    thresh_val = int(config.data["coords"].get("threshold", 150))
+    invert = bool(config.data["coords"].get("invert", True))
+    thresh = preprocess_coords_image(img, thresh_val, invert)
+    
+    custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789\ ,/-:'
+    try:
+        raw_text = pytesseract.image_to_string(thresh, config=custom_config).strip()
+        coords = parse_coordinates(raw_text)
+        return coords, raw_text, img, thresh
+    except Exception:
+        return None, "", img, thresh
+
+def coords_process(log_widget):
+    global running, bot_paused, config, stats
+    last_logged = None
+    with mss.mss() as sct:
+        while running:
+            if bot_paused or not config.data["coords"].get("enabled", False) or not config.data["coords"].get("area"):
+                time.sleep(1.0)
+                continue
+            if not TESSERACT_PATH:
+                log_message("❌ OCR Error: No se encontró Tesseract-OCR instalado.", log_widget)
+                time.sleep(5.0)
+                continue
+                
+            coords, raw_text, _, _ = read_coords_from_screen(sct)
+            if coords:
+                stats["current_coords"] = coords
+                if stats["spot_coords"] is None:
+                    stats["spot_coords"] = coords
+                    log_message(f"🧭 Spot fijado en coordenadas: X={coords[0]}, Y={coords[1]}", log_widget)
+                elif coords != last_logged:
+                    dx = coords[0] - stats["spot_coords"][0]
+                    dy = coords[1] - stats["spot_coords"][1]
+                    dist = int((dx**2 + dy**2)**0.5)
+                    log_message(f"🧭 Coordenadas: ({coords[0]}, {coords[1]}) | Dist. del Spot: {dist} pasos (ΔX:{dx:+d}, ΔY:{dy:+d})", log_widget)
+                    last_logged = coords
+            time.sleep(1.5)
+
+def calibrate_coords_window(log_widget):
+    area = config.data["coords"].get("area")
+    if not area:
+        messagebox.showwarning("Falta Zona", "Primero marca la 'Zona Coordenadas' en la pantalla del juego.")
+        return
+    if not TESSERACT_PATH:
+        messagebox.showerror("Error Tesseract", "No se encontró Tesseract-OCR en el sistema.")
+        return
+
+    def _run_calibrator():
+        win_name = "Lector MU - Calibracion OCR (Presiona 'q' o ESC para salir)"
+        cv2.namedWindow(win_name, cv2.WINDOW_AUTOSIZE)
+        init_thresh = int(config.data["coords"].get("threshold", 150))
+        init_inv = 1 if config.data["coords"].get("invert", True) else 0
+        
+        cv2.createTrackbar("Umbral", win_name, init_thresh, 255, lambda v: None)
+        cv2.createTrackbar("Invertir", win_name, init_inv, 1, lambda v: None)
+        
+        log_message("🔍 Calibrador OCR abierto. Ajusta las barras y presiona 'q' en la ventana para guardar.", log_widget)
+        
+        with mss.mss() as sct:
+            while True:
+                try:
+                    if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+                        break
+                except:
+                    break
+                    
+                t_val = cv2.getTrackbarPos("Umbral", win_name)
+                inv_val = bool(cv2.getTrackbarPos("Invertir", win_name))
+                
+                config.data["coords"]["threshold"] = t_val
+                config.data["coords"]["invert"] = inv_val
+                
+                coords, raw_text, img, thresh = read_coords_from_screen(sct)
+                
+                if img is not None and thresh is not None:
+                    img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                    img_resized = cv2.resize(img_bgr, (thresh.shape[1], thresh.shape[0]))
+                    thresh_bgr = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+                    
+                    combined = np.vstack([img_resized, thresh_bgr])
+                    
+                    # Panel inferior para mostrar el resultado de lectura
+                    info_panel = np.zeros((75, max(combined.shape[1], 380), 3), dtype=np.uint8)
+                    if combined.shape[1] < info_panel.shape[1]:
+                        pad = info_panel.shape[1] - combined.shape[1]
+                        combined = cv2.copyMakeBorder(combined, 0, 0, 0, pad, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+                    
+                    status_color = (0, 255, 0) if coords else (0, 165, 255)
+                    parsed_str = f"X={coords[0]} | Y={coords[1]}" if coords else "Sin detectar (Ajusta Umbral)"
+                    
+                    cv2.putText(info_panel, f"OCR Crudo: '{raw_text}'", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+                    cv2.putText(info_panel, f"Detectado: {parsed_str}", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2)
+                    
+                    final_view = np.vstack([combined, info_panel])
+                    cv2.imshow(win_name, final_view)
+                
+                key = cv2.waitKey(250) & 0xFF
+                if key == ord('q') or key == 27:
+                    break
+                    
+        cv2.destroyAllWindows()
+        config.save()
+        log_message(f"✅ Calibración OCR guardada (Umbral: {config.data['coords']['threshold']}, Invertir: {config.data['coords']['invert']}).", log_widget)
+
+    threading.Thread(target=_run_calibrator, daemon=True).start()
+
 # ----- Editor de Colores -----
 class ColorEditor(tk.Toplevel):
     def __init__(self, parent):
@@ -549,14 +717,15 @@ def update_log(widget, msg):
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MU Online Helper - Legend V13 (Smart Click Monitor)")
-        self.geometry("950x850")
+        self.title("MU Online Helper - Legend V16 (OCR Coordinates & Navigation Test)")
+        self.geometry("980x900")
         self.configure(bg=MU_BG)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.buff_var = tk.BooleanVar(value=config.data.get("buff_enabled", True))
         self.pickup_var = tk.BooleanVar(value=config.data.get("pickup_enabled", False))
         self.attack_var = tk.BooleanVar(value=config.data.get("attack_enabled", False))
+        self.coords_var = tk.BooleanVar(value=config.data["coords"].get("enabled", False))
         
         self.create_widgets()
         keyboard.add_hotkey("F5", lambda: start_activity(self.log_text, self.cooldown_label))
@@ -646,6 +815,17 @@ class Application(tk.Tk):
         self.mon_min_entry.insert(0, str(config.data["monitor"]["interval_minutes"]))
         
         create_mu_button(monitor_frame, "Fijar Intervalo", self.apply_monitor).pack(pady=5)
+
+        # ---- COORDS (OCR) FRAME ----
+        coords_frame = tk.LabelFrame(right_frame, text=" 🧭 Coordenadas (OCR) ", **style_lf)
+        coords_frame.pack(fill=tk.X, pady=(5, 0))
+        tk.Checkbutton(coords_frame, text="Activar Lector", variable=self.coords_var, command=self.update_flags, **style_cb).pack(pady=2)
+        
+        coords_btns = tk.Frame(coords_frame, bg=MU_FRAME_BG)
+        coords_btns.pack(pady=4)
+        self.coords_area_button = create_mu_button(coords_btns, "Zona Coords", self.add_coords_area)
+        self.coords_area_button.pack(side=tk.LEFT, padx=2)
+        create_mu_button(coords_btns, "🔍 Calibrar OCR", lambda: calibrate_coords_window(self.log_text), bg="#8B6508").pack(side=tk.LEFT, padx=2)
         
         # ---- ESTADÍSTICAS FRAME ----
         stats_frame = tk.LabelFrame(self, text=" 📊 Estadísticas de Farmeo ", **style_lf)
@@ -653,6 +833,9 @@ class Application(tk.Tk):
         
         self.time_lbl = tk.Label(stats_frame, text="⏳ Tiempo Farmeando: 00:00:00", bg=MU_FRAME_BG, fg="#00FFFF", font=("Consolas", 11, "bold"))
         self.time_lbl.pack(pady=2)
+        
+        self.coords_lbl = tk.Label(stats_frame, text="📍 Coordenadas: -- | Spot: --", bg=MU_FRAME_BG, fg="#FFA500", font=("Consolas", 10, "bold"))
+        self.coords_lbl.pack(pady=2)
         
         self.items_lbl = tk.Label(stats_frame, text="Esperando inicio...", bg=MU_FRAME_BG, fg=MU_FG, font=("Consolas", 10))
         self.items_lbl.pack(pady=2)
@@ -683,6 +866,13 @@ class Application(tk.Tk):
             mins, secs = divmod(rem, 60)
             self.time_lbl.config(text=f"⏳ Tiempo Farmeando: {hrs:02d}:{mins:02d}:{secs:02d}")
             
+            if stats["current_coords"]:
+                cx, cy = stats["current_coords"]
+                sx, sy = stats["spot_coords"] if stats["spot_coords"] else (cx, cy)
+                self.coords_lbl.config(text=f"📍 Coordenadas: ({cx}, {cy}) | Spot Fijado: ({sx}, {sy})")
+            else:
+                self.coords_lbl.config(text="📍 Coordenadas: -- | Spot: --")
+            
             if stats["items"]:
                 items_str = " | ".join([f"{k.capitalize()}: {v}" for k, v in stats["items"].items()])
                 self.items_lbl.config(text=items_str)
@@ -697,6 +887,7 @@ class Application(tk.Tk):
         config.data["buff_enabled"] = self.buff_var.get()
         config.data["pickup_enabled"] = self.pickup_var.get()
         config.data["attack_enabled"] = self.attack_var.get()
+        config.data["coords"]["enabled"] = self.coords_var.get()
         self.update_config_status()
 
     def apply_monitor(self):
@@ -772,6 +963,13 @@ class Application(tk.Tk):
             self.update_config_status()
             log_message("Botón de inventario marcado.", self.log_text)
 
+    def add_coords_area(self):
+        sel = select_area(self)
+        if sel:
+            config.data["coords"]["area"] = sel
+            self.update_config_status()
+            log_message("🧭 Zona de coordenadas marcada.", self.log_text)
+
     def apply_cooldown(self):
         try:
             config.data["cooldown"] = int(self.cooldown_entry.get())
@@ -791,26 +989,33 @@ class Application(tk.Tk):
         self.attack_area_button.config(bg="#006400" if config.data.get("attack_area") else MU_BTN_BG)
         self.monitor_area_button.config(bg="#006400" if config.data["monitor"].get("area") else MU_BTN_BG)
         self.monitor_btn_button.config(bg="#006400" if config.data["monitor"].get("button_area") else MU_BTN_BG)
+        self.coords_area_button.config(bg="#006400" if config.data["coords"].get("area") else MU_BTN_BG)
 
     def on_close(self):
         stop_activity(self.log_text)
         self.destroy()
 
 def start_activity(log_widget, cd_label):
-    global running, buff_thread, pickup_thread, attack_thread, monitor_thread, stats, bot_paused
+    global running, buff_thread, pickup_thread, attack_thread, monitor_thread, coords_thread, stats, bot_paused
     
     if config.data["monitor"].get("enabled", False) and not config.data["monitor"].get("button_area"):
         log_message("❌ Error: Monitor activado pero falta marcar el 'Botón Inventario'.", log_widget)
+        return
+    if config.data["coords"].get("enabled", False) and not config.data["coords"].get("area"):
+        log_message("❌ Error: Lector de coordenadas activado pero falta marcar la 'Zona Coords'.", log_widget)
         return
         
     if not running:
         running = True
         bot_paused = False
         stats["start_time"] = time.time()
+        stats["spot_coords"] = None
+        stats["current_coords"] = None
         buff_thread = threading.Thread(target=buffing_process, args=(log_widget, cd_label), daemon=True); buff_thread.start()
         if config.data.get("pickup_enabled", False): pickup_thread = threading.Thread(target=pickup_process, args=(log_widget,), daemon=True); pickup_thread.start()
         if config.data.get("attack_enabled", False): attack_thread = threading.Thread(target=attack_process, args=(log_widget,), daemon=True); attack_thread.start()
         monitor_thread = threading.Thread(target=monitor_process, args=(log_widget,), daemon=True); monitor_thread.start()
+        if config.data["coords"].get("enabled", False): coords_thread = threading.Thread(target=coords_process, args=(log_widget,), daemon=True); coords_thread.start()
         
         log_message("=== MACRO INICIADA (F5) ===", log_widget)
         if config.data["telegram"]["enabled"]: send_telegram("⚔️ Bot iniciado. Farmeo en curso...")
