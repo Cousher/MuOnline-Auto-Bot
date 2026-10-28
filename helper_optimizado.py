@@ -35,6 +35,10 @@ def setup_tesseract():
 
 TESSERACT_PATH = setup_tesseract()
 
+# --- IDENTIDAD DEL SOFTWARE ---
+APP_NAME = "Crixus Mu Online Bot"
+APP_VERSION = "Legend V21"
+
 # --- PALETA MU ONLINE ---
 MU_BG = "#0A0A0A"          
 MU_FRAME_BG = "#151515"    
@@ -84,7 +88,8 @@ class Config:
             "telegram": {
                 "enabled": False,
                 "token": "",
-                "chat_id": ""
+                "chat_id": "",
+                "bot_name": ""
             },
             "monitor": {
                 "enabled": False,
@@ -114,8 +119,8 @@ class Config:
         if "attack_area" not in self.data: self.data["attack_area"] = None
         if "attack_color" not in self.data: self.data["attack_color"] = {"lower": [0, 200, 200], "upper": [10, 255, 255]}
         if not isinstance(self.data.get("telegram"), dict):
-            self.data["telegram"] = {"enabled": False, "token": "", "chat_id": ""}
-        for k, v in {"enabled": False, "token": "", "chat_id": ""}.items():
+            self.data["telegram"] = {"enabled": False, "token": "", "chat_id": "", "bot_name": ""}
+        for k, v in {"enabled": False, "token": "", "chat_id": "", "bot_name": ""}.items():
             self.data["telegram"].setdefault(k, v)
         if not isinstance(self.data.get("monitor"), dict):
             self.data["monitor"] = {"enabled": False, "interval_minutes": 30, "button_area": None, "area": None}
@@ -215,12 +220,18 @@ def get_telegram_keyboard():
     }
 
 # ----- Funciones Telegram -----
+def get_bot_tag():
+    """Devuelve el prefijo identificador del PJ/VPS si fue configurado (ej: '🏷️ [VPS 1 - BK]\\n')."""
+    alias = str(config.data["telegram"].get("bot_name", "")).strip()
+    return f"🏷️ [{alias}]\n" if alias else ""
+
 def send_telegram_async(msg, with_keyboard=False):
     token = config.data["telegram"].get("token", "").strip()
     chat_id = str(config.data["telegram"].get("chat_id", "")).strip()
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": msg}
+        full_msg = f"{get_bot_tag()}{msg}"
+        payload = {"chat_id": chat_id, "text": full_msg}
         if with_keyboard:
             payload["reply_markup"] = json.dumps(get_telegram_keyboard())
         try:
@@ -236,9 +247,10 @@ def send_telegram_photo_async(photo_path, caption="📸 Estado del Inventario.")
     chat_id = str(config.data["telegram"].get("chat_id", "")).strip()
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        full_caption = f"{get_bot_tag()}{caption}"
         try:
             with open(photo_path, "rb") as f:
-                requests.post(url, data={"chat_id": chat_id, "caption": caption}, files={"photo": f}, timeout=15)
+                requests.post(url, data={"chat_id": chat_id, "caption": full_caption}, files={"photo": f}, timeout=15)
         except Exception:
             pass
         finally:
@@ -248,21 +260,21 @@ def send_telegram_photo_async(photo_path, caption="📸 Estado del Inventario.")
             except Exception:
                 pass
 
-# ----- Configuración de Telegram (UI) -----
+# ----- Configuración de Telegram y Multi-VPS (UI) -----
 class TelegramConfig(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("📱 Notificaciones y Control Telegram")
-        self.geometry("460x400")
+        self.title(f"📱 Control Telegram & Multi-VPS — {APP_NAME}")
+        self.geometry("480x465")
         self.configure(bg=MU_BG)
         self.grab_set()
 
         tk.Label(self, text="CONFIGURACIÓN DE TELEGRAM", font=MU_TITLE_FONT, bg=MU_BG, fg=MU_FG).pack(pady=10)
         
         info = (
-            "1. Busca a @BotFather en Telegram y crea un bot.\n"
-            "2. Copia el Token aquí.\n"
-            "3. Busca a @userinfobot para obtener tu Chat ID.\n"
+            "1. En @BotFather crea un bot (/newbot) para este PC/VPS y copia el Token.\n"
+            "2. En @userinfobot obtén tu Chat ID personal (puedes usar el mismo en varios VPS).\n"
+            "3. Asigna un Nombre/Alias (ej: 'VPS 1 - BK') para identificar cada cliente.\n"
             "4. Escribe /menu o /ayuda en Telegram para abrir el panel de botones."
         )
         tk.Label(self, text=info, bg=MU_BG, fg="#AAAAAA", justify=tk.LEFT).pack(pady=5)
@@ -270,18 +282,23 @@ class TelegramConfig(tk.Toplevel):
         self.enabled_var = tk.BooleanVar(value=config.data["telegram"]["enabled"])
         tk.Checkbutton(self, text="Activar Notificaciones y Control por Telegram", variable=self.enabled_var, bg=MU_BG, fg=MU_FG, selectcolor=MU_ACCENT).pack(pady=5)
 
-        tk.Label(self, text="Bot Token:", bg=MU_BG, fg=MU_FG).pack(anchor="w", padx=20)
+        tk.Label(self, text="Nombre del PJ / VPS (Ej: VPS 1 - BK):", bg=MU_BG, fg=MU_FG).pack(anchor="w", padx=20)
+        self.botname_entry = tk.Entry(self, width=35, bg=MU_LIST_BG, fg="#00FFFF", insertbackground=MU_FG, font=MU_FONT)
+        self.botname_entry.pack(padx=20, pady=2, anchor="w")
+        self.botname_entry.insert(0, config.data["telegram"].get("bot_name", ""))
+
+        tk.Label(self, text="Bot Token (de @BotFather):", bg=MU_BG, fg=MU_FG).pack(anchor="w", padx=20, pady=(4, 0))
         self.token_entry = tk.Entry(self, width=50, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG)
         self.token_entry.pack(padx=20, pady=2)
         self.token_entry.insert(0, config.data["telegram"]["token"])
 
-        tk.Label(self, text="Tu Chat ID:", bg=MU_BG, fg=MU_FG).pack(anchor="w", padx=20)
+        tk.Label(self, text="Tu Chat ID (de @userinfobot):", bg=MU_BG, fg=MU_FG).pack(anchor="w", padx=20, pady=(4, 0))
         self.chatid_entry = tk.Entry(self, width=30, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG)
         self.chatid_entry.pack(padx=20, pady=2, anchor="w")
         self.chatid_entry.insert(0, config.data["telegram"]["chat_id"])
 
         btn_frame = tk.Frame(self, bg=MU_BG)
-        btn_frame.pack(pady=20)
+        btn_frame.pack(pady=18)
         
         create_mu_button(btn_frame, "Probar y Enviar Menú", self.test_message, bg="#006400").pack(side=tk.LEFT, padx=10)
         create_mu_button(btn_frame, "Guardar", self.save_config).pack(side=tk.LEFT, padx=10)
@@ -289,15 +306,17 @@ class TelegramConfig(tk.Toplevel):
     def test_message(self):
         token = self.token_entry.get().strip()
         chat_id = self.chatid_entry.get().strip()
+        alias = self.botname_entry.get().strip()
         if not token or not chat_id:
             messagebox.showwarning("Faltan datos", "Completa el Token y el Chat ID.")
             return
         
+        tag = f"🏷️ [{alias}]\n" if alias else ""
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         try:
             payload = {
                 "chat_id": chat_id,
-                "text": "¡Hola! 🤖 Panel de control remoto de MU Online activado.\nUsa los botones de abajo o escribe /ayuda para ver todos los comandos.",
+                "text": f"{tag}¡Hola! 🤖 Panel de control remoto de {APP_NAME} ({APP_VERSION}) activado.\nUsa los botones de abajo o escribe /ayuda para ver todos los comandos.",
                 "reply_markup": json.dumps(get_telegram_keyboard())
             }
             res = requests.post(url, data=payload, timeout=6)
@@ -310,9 +329,11 @@ class TelegramConfig(tk.Toplevel):
 
     def save_config(self):
         config.data["telegram"]["enabled"] = self.enabled_var.get()
+        config.data["telegram"]["bot_name"] = self.botname_entry.get().strip()
         config.data["telegram"]["token"] = self.token_entry.get().strip()
         config.data["telegram"]["chat_id"] = self.chatid_entry.get().strip()
         config.save()
+        sync_ui_from_config()
         messagebox.showinfo("Guardado", "Configuración de Telegram guardada.")
         self.destroy()
 
@@ -1377,14 +1398,15 @@ def handle_telegram_command(text, log_widget):
     # 1. Menú y Ayuda
     if cmd_lower in ("/start", "/ayuda", "/help", "ayuda", "/menu", "menu", "❓ ayuda"):
         help_msg = (
-            "🤖 PANEL DE CONTROL — MU ONLINE BOT (Legend V20)\n\n"
+            f"🤖 PANEL DE CONTROL — {APP_NAME.upper()} ({APP_VERSION})\n\n"
             "⚡ PRIORIDAD INTELIGENTE ACTIVA:\n"
             "1° Recolección > 2° Caminar > 3° Buff > 4° Ataque > 5° Foto\n\n"
             "🎮 CONTROL GENERAL:\n"
             "• /iniciar — Inicia el bot (F5)\n"
             "• /detener — Detiene el bot (F6)\n"
             "• /pausa / /reanudar — Pausa o reanuda acciones\n"
-            "• /estado (o /status) — Reporte completo en vivo\n\n"
+            "• /estado (o /status) — Reporte completo en vivo\n"
+            "• /vps <nombre> — Cambia el alias de este VPS/PJ\n\n"
             "⚔️ MÓDULOS (puedes usar on/off o alternar):\n"
             "• /atacar [on|off] — Activa/desactiva Combate\n"
             "• /pickup [on|off] — Activa/desactiva Recolección\n"
@@ -1405,6 +1427,21 @@ def handle_telegram_command(text, log_widget):
             "• /cancelar (o /stopmove) — Detiene la caminata actual"
         )
         send_telegram(help_msg, with_keyboard=True)
+        return
+
+    # 1b. Cambiar alias del VPS / PJ remotamente (/vps o /nombre)
+    if cmd_lower.startswith("/vps") or cmd_lower.startswith("/nombre"):
+        parts = text.strip().split(maxsplit=1)
+        if len(parts) >= 2 and parts[1].strip():
+            new_alias = parts[1].strip()
+            config.data["telegram"]["bot_name"] = new_alias
+            config.save()
+            sync_ui_from_config()
+            log_message(f"🏷️ Nombre de cliente/VPS actualizado a: {new_alias}", log_widget)
+            send_telegram(f"✅ Identificador de este bot actualizado a: {new_alias}", with_keyboard=True)
+        else:
+            curr_alias = config.data["telegram"].get("bot_name", "") or "Sin asignar"
+            send_telegram(f"🏷️ Nombre actual: {curr_alias}\nUsa `/vps VPS 1 - BK` para asignarle un nombre.", with_keyboard=True)
         return
 
     # 2. Iniciar / Detener / Pausar Bot General
@@ -1598,7 +1635,7 @@ def handle_telegram_command(text, log_widget):
 
         items_str = "\n".join([f"🔹 {k.capitalize()}: {v}" for k, v in stats["items"].items()]) or "Ninguno aún"
         send_telegram(
-            f"📊 ESTADO DEL BOT — LEGEND V20\n"
+            f"📊 ESTADO DEL BOT — {APP_NAME.upper()} ({APP_VERSION})\n"
             f"🤖 Estado: {estado_bot}\n"
             f"⏳ Tiempo activo: {time_str}\n"
             f"📍 Posición: {curr_str} | Spot: {spot_str}\n\n"
@@ -1792,14 +1829,14 @@ class ColorEditor(tk.Toplevel):
 class HelpGuideWindow(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("📖 Guía Detallada de Funcionamiento — MU Online AutoBot (Legend V20)")
-        self.geometry("860x640")
+        self.title(f"📖 Guía Detallada de Funcionamiento — {APP_NAME} ({APP_VERSION})")
+        self.geometry("860x650")
         self.configure(bg=MU_BG)
         self.grab_set()
 
-        header = tk.Label(self, text="📖 MANUAL INTERACTIVO — MU ONLINE AUTOBOT", font=MU_TITLE_FONT, bg=MU_BG, fg=MU_FG)
+        header = tk.Label(self, text=f"📖 MANUAL INTERACTIVO — {APP_NAME.upper()}", font=MU_TITLE_FONT, bg=MU_BG, fg=MU_FG)
         header.pack(pady=(12, 4))
-        sub = tk.Label(self, text="Selecciona una categoría para ver el paso a paso de configuración y uso:", bg=MU_BG, fg="#AAAAAA", font=("Helvetica", 9))
+        sub = tk.Label(self, text=f"Versión {APP_VERSION} · Selecciona una categoría para ver el paso a paso:", bg=MU_BG, fg="#AAAAAA", font=("Helvetica", 9))
         sub.pack(pady=(0, 8))
 
         nav_frame = tk.Frame(self, bg=MU_BG)
@@ -1896,13 +1933,20 @@ class HelpGuideWindow(tk.Toplevel):
                 "     el PJ siga atacando durante todo el tiempo de Cooldown."
             ),
             "telegram": (
-                "📱 5. CONTROL REMOTO POR TELEGRAM Y 📸 MONITOR DE INVENTARIO\n"
+                "📱 5. CONTROL POR TELEGRAM, MULTI-VPS Y 📸 MONITOR DE INVENTARIO\n"
                 "══════════════════════════════════════════════════════════════════\n\n"
                 "🔧 CONFIGURAR TU BOT DE TELEGRAM:\n"
                 "   1. En Telegram, escribe a @BotFather -> envía /newbot y copia el TOKEN.\n"
                 "   2. Escribe a @userinfobot para ver tu número de Chat ID.\n"
-                "   3. Abre [📱 Telegram] en el programa, pega ambos datos, marca la casilla\n"
-                "      'Activar Notificaciones y Control por Telegram' y toca [Probar y Enviar Menú].\n\n"
+                "   3. Abre [📱 Telegram] en el programa, pega ambos datos, asigna un Nombre/Alias\n"
+                "      (ej: 'VPS 1 - BK'), marca 'Activar' y toca [Probar y Enviar Menú].\n\n"
+                "🖥️ CÓMO USAR 2 O MÁS VPS / CLIENTES AL MISMO TIEMPO:\n"
+                "   • Crea en @BotFather 1 Bot diferente para cada VPS (ej: Bot 1 para VPS 1,\n"
+                "     Bot 2 para VPS 2) para que sus conexiones getUpdates no choquen.\n"
+                "   • Pon tu MISMO Chat ID personal en todos los VPS.\n"
+                "   • En el campo 'Nombre del PJ / VPS' ponle a cada uno su alias ('VPS 1 - BK',\n"
+                "     'VPS 2 - Elf'). Todos los mensajes y alertas de joyas incluirán la etiqueta\n"
+                "     🏷️ [VPS 1 - BK] para que sepas al instante de qué servidor provienen.\n\n"
                 "📸 CONFIGURAR EL MONITOR DE INVENTARIO (PRIORIDAD 5):\n"
                 "   • [Botón Inventario]: Encuadra el botón físico del inventario en la barra inferior\n"
                 "     de la interfaz de MU Online (evita bloqueos de teclado por AntiCheat).\n"
@@ -1912,6 +1956,7 @@ class HelpGuideWindow(tk.Toplevel):
                 "   • /iniciar | /detener   -> Inicia (F5) o detiene (F6) el bot.\n"
                 "   • /pausa | /reanudar    -> Pausa o reanuda todas las acciones (incluida caminata).\n"
                 "   • /estado o /status     -> Reporte completo (estado, tiempo, coords, spot y joyas).\n"
+                "   • /vps <nombre>         -> Cambia remotamente el nombre/alias de este VPS o PJ.\n"
                 "   • /atacar [on|off]      -> Activa o apaga el modo Combate.\n"
                 "   • /pickup [on|off]      -> Activa o apaga la Recolección.\n"
                 "   • /buff [on|off]        -> Activa o apaga las Magias/Auras.\n"
@@ -2064,7 +2109,6 @@ class Application(tk.Tk):
         global app_instance
         super().__init__()
         app_instance = self
-        self.title("MU Online Helper - Legend V20 (5-Priority Engine & Telegram Remote)")
         self.geometry("980x890")
         self.configure(bg=MU_BG)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -2075,6 +2119,7 @@ class Application(tk.Tk):
         self.coords_var = tk.BooleanVar(value=config.data["coords"].get("enabled", False))
         
         self.create_widgets()
+        self.update_window_title()
         # A40 corregido: Ejecutar hotkeys dentro del hilo principal de Tkinter con self.after
         keyboard.add_hotkey("F5", lambda: self.after(0, lambda: start_activity(self.log_text, self.cooldown_label)))
         keyboard.add_hotkey("F6", lambda: self.after(0, lambda: stop_activity(self.log_text)))
@@ -2082,8 +2127,16 @@ class Application(tk.Tk):
         start_telegram_listener(self.log_text)
         self.update_stats_ui()
 
+    def update_window_title(self):
+        alias = str(config.data["telegram"].get("bot_name", "")).strip()
+        alias_suffix = f" [{alias}]" if alias else ""
+        self.title(f"{APP_NAME} — {APP_VERSION}{alias_suffix} (5-Priority Engine & Telegram Remote)")
+        if hasattr(self, "header_title_lbl"):
+            self.header_title_lbl.config(text=f"⚔️ {APP_NAME.upper()} — {APP_VERSION}{alias_suffix} ⚔️")
+
     def refresh_ui_from_config(self):
         """Actualiza los controles visuales cuando un comando de Telegram modifica config.data."""
+        self.update_window_title()
         self.buff_var.set(config.data.get("buff_enabled", True))
         self.pickup_var.set(config.data.get("pickup_enabled", False))
         self.attack_var.set(config.data.get("attack_enabled", False))
@@ -2097,8 +2150,8 @@ class Application(tk.Tk):
         self.update_config_status()
 
     def create_widgets(self):
-        title_lbl = tk.Label(self, text="⚔️ MU ONLINE AUTO-HELPER ⚔️", font=("Georgia", 16, "bold"), bg=MU_BG, fg=MU_FG)
-        title_lbl.pack(pady=10)
+        self.header_title_lbl = tk.Label(self, text=f"⚔️ {APP_NAME.upper()} — {APP_VERSION} ⚔️", font=("Georgia", 16, "bold"), bg=MU_BG, fg=MU_FG)
+        self.header_title_lbl.pack(pady=10)
 
         config_frame = tk.Frame(self, bg=MU_BG)
         config_frame.pack(side=tk.TOP, fill=tk.X, padx=15, pady=5)
@@ -2220,7 +2273,7 @@ class Application(tk.Tk):
         # ---- CONSOLA LOG ----
         self.log_text = tk.Text(self, height=8, bg=MU_LIST_BG, fg="#00FF00", font=("Consolas", 10), bd=2, relief="sunken")
         self.log_text.pack(fill=tk.BOTH, padx=15, pady=5, expand=True)
-        self.log_text.insert(tk.END, ">>> Sistema V20 en línea. Prioridades: 1° Pickup > 2° Caminar > 3° Buff > 4° Ataque > 5° Foto.\n")
+        self.log_text.insert(tk.END, f">>> {APP_NAME} ({APP_VERSION}) en línea. Prioridades: 1° Pickup > 2° Caminar > 3° Buff > 4° Ataque > 5° Foto.\n")
         self.log_text.config(state=tk.DISABLED)
 
         # ---- BOTONES GLOBALES ----

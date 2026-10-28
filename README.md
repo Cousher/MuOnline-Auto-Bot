@@ -1,10 +1,10 @@
-# 🛡️ MU Online AutoBot — Legend V20
+# ⚔️ Crixus Mu Online Bot — Legend V21
 
-Un bot automatizado avanzado para servidores de **MU Online**, construido en Python con interfaz gráfica oscura (Tkinter), visión artificial en tiempo real (`OpenCV` + `mss`), lectura de coordenadas por OCR (`Tesseract`), navegación inteligente por el mapa y control remoto bidireccional completo desde **Telegram**.
+Un bot automatizado avanzado para servidores de **MU Online**, construido en Python con interfaz gráfica oscura (Tkinter), visión artificial en tiempo real (`OpenCV` + `mss`), lectura de coordenadas por OCR (`Tesseract`), navegación inteligente por el mapa, guía interactiva integrada y control remoto bidireccional completo (con soporte **Multi-VPS**) desde **Telegram**.
 
 ---
 
-## 🚀 Características Principales (Legend V20)
+## 🚀 Características Principales (Legend V21)
 
 ### ⚡ 1. Motor de 5 Prioridades en Tiempo Real y Control Seguro de Entrada
 Todos los módulos corren en hilos sincronizados bajo una jerarquía estricta con exclusión mutua (`input_lock`) y liberación garantizada de botones (`held_mouse_button`) para que ninguna acción interfiera con otra ni deje clics bloqueados:
@@ -29,12 +29,18 @@ Todos los módulos corren en hilos sincronizados bajo una jerarquía estricta co
 
 ---
 
-### 📱 3. Control Remoto Total por Telegram (Panel de Botones + Comandos)
-Incluye un **Teclado Interactivo Persistente** en Telegram y soporte completo de comandos:
+### 📱 3. Control Remoto por Telegram y Soporte Multi-VPS
+Incluye un **Teclado Interactivo Persistente**, identificador de cliente/VPS (`🏷️ [VPS 1 - BK]`) en cada mensaje/foto y soporte completo de comandos:
+
+#### 🖥️ Cómo usar 2 o más VPS al mismo tiempo:
+1. En `@BotFather` crea **1 Bot para cada VPS** (`/newbot` → `Token 1` para el VPS 1, `Token 2` para el VPS 2) para evitar conflictos de lectura `getUpdates`.
+2. En todos los VPS coloca **tu mismo `Chat ID` personal** (`@userinfobot`).
+3. En la ventana `📱 Telegram` (o con el comando `/vps <nombre>`) asigna un alias a cada uno (ej. `VPS 1 - BK` y `VPS 2 - Elf`). Todas las notificaciones, reportes y fotos incluirán la etiqueta **`🏷️ [VPS 1 - BK]`** arriba y también se mostrará en el título de la ventana del bot.
 
 | Comando / Botón | Descripción |
 | :--- | :--- |
 | `📊 Estado` / `/estado` (o `/status`) | Muestra estado general, tiempo activo, coordenadas actuales, Spot, módulos activos y joyas recogidas. |
+| `/vps <nombre>` o `/nombre <alias>` | Asigna o cambia remotamente el identificador de este VPS/Personaje (ej. `/vps VPS 1 - BK`). |
 | `⚔️ Ataque` / `/atacar [on\|off]` | Activa o desactiva el módulo de Auto Ataque en vivo (sincronizado con la interfaz). |
 | `💎 Pickup` / `/pickup [on\|off]` | Activa o desactiva la recolección automática de ítems. |
 | `✨ Buffs` / `/buff [on\|off]` | Activa o desactiva la ronda automática de auras/party. |
@@ -51,7 +57,7 @@ Incluye un **Teclado Interactivo Persistente** en Telegram y soporte completo de
 ---
 
 ### 🎨 4. Forja de Colores HSV, Guía Interactiva Integrada y Compatibilidad DirectX
-- **Manual Interactivo Integrado (`📖 Guía de Uso`)**: Ventana de ayuda por pestañas dentro de la aplicación (`HelpGuideWindow`) con instrucciones detalladas de calibración, prioridades y comandos.
+- **Manual Interactivo Integrado (`📖 Guía de Uso`)**: Ventana de ayuda por pestañas dentro de la aplicación (`HelpGuideWindow`) con instrucciones detalladas de calibración, prioridades, Multi-VPS y comandos.
 - **Forja de Colores HSV (`ColorEditor`)**: Editor integrado con selector visual de color, vista previa en vivo y validación estricta de rangos (`H: 0..179`, `S/V: 0..255`).
 - **Persistencia Atómica (`config.json`)**: Guardado protegido con `threading.Lock` y archivo temporal (`os.replace`) para evitar corrupción de datos.
 - **Bypass DirectX (*Hover Trick*)**: Micro-movimiento previo al clic (`moveTo(x, y)` → `moveTo(x+1, y+1)`) y pulsación protegida con `try/finally` para máxima compatibilidad con clientes de MU Online.
@@ -73,7 +79,7 @@ Incluye un **Teclado Interactivo Persistente** en Telegram y soporte completo de
 ## 📦 Compilación a Ejecutable (`.exe`)
 El proyecto se puede compilar a un archivo `.exe` independiente usando PyInstaller:
 ```bash
-pyinstaller --onefile --noconsole --name helper_v20 helper_optimizado.py
+pyinstaller --onefile --noconsole --name Crixus_Mu_Bot_v21 helper_optimizado.py
 ```
 
 ## 🎮 Atajos Rápidos en el Juego
