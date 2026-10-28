@@ -50,7 +50,8 @@ Incluye un **Teclado Interactivo Persistente** en Telegram y soporte completo de
 
 ---
 
-### 🎨 4. Forja de Colores HSV, Guardado Atómico y Compatibilidad DirectX
+### 🎨 4. Forja de Colores HSV, Guía Interactiva Integrada y Compatibilidad DirectX
+- **Manual Interactivo Integrado (`📖 Guía de Uso`)**: Ventana de ayuda por pestañas dentro de la aplicación (`HelpGuideWindow`) con instrucciones detalladas de calibración, prioridades y comandos.
 - **Forja de Colores HSV (`ColorEditor`)**: Editor integrado con selector visual de color, vista previa en vivo y validación estricta de rangos (`H: 0..179`, `S/V: 0..255`).
 - **Persistencia Atómica (`config.json`)**: Guardado protegido con `threading.Lock` y archivo temporal (`os.replace`) para evitar corrupción de datos.
 - **Bypass DirectX (*Hover Trick*)**: Micro-movimiento previo al clic (`moveTo(x, y)` → `moveTo(x+1, y+1)`) y pulsación protegida con `try/finally` para máxima compatibilidad con clientes de MU Online.

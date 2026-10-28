@@ -1788,6 +1788,218 @@ class ColorEditor(tk.Toplevel):
         except ValueError:
             messagebox.showerror("Error", "Los valores deben ser números enteros.")
 
+# ----- Guía Interactiva de Funcionamiento (UI) -----
+class HelpGuideWindow(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("📖 Guía Detallada de Funcionamiento — MU Online AutoBot (Legend V20)")
+        self.geometry("860x640")
+        self.configure(bg=MU_BG)
+        self.grab_set()
+
+        header = tk.Label(self, text="📖 MANUAL INTERACTIVO — MU ONLINE AUTOBOT", font=MU_TITLE_FONT, bg=MU_BG, fg=MU_FG)
+        header.pack(pady=(12, 4))
+        sub = tk.Label(self, text="Selecciona una categoría para ver el paso a paso de configuración y uso:", bg=MU_BG, fg="#AAAAAA", font=("Helvetica", 9))
+        sub.pack(pady=(0, 8))
+
+        nav_frame = tk.Frame(self, bg=MU_BG)
+        nav_frame.pack(fill=tk.X, padx=15, pady=4)
+
+        self.sections = {
+            "inicio": (
+                "🚀 1. INICIO RÁPIDO — CONFIGURACIÓN EN 1 MINUTO\n"
+                "══════════════════════════════════════════════════════════════════\n\n"
+                "1️⃣ EJECUTAR COMO ADMINISTRADOR:\n"
+                "   • MU Online utiliza DirectX y bloquea los clicks de programas sin permisos.\n"
+                "   • Haz siempre 'Click Derecho -> Ejecutar como Administrador' sobre el bot.\n\n"
+                "2️⃣ MODO VENTANA Y POSICIÓN FIJA:\n"
+                "   • Abre MU Online en Modo Ventana y colócalo en un lugar fijo de tu monitor.\n"
+                "   • Todas las zonas que marques con el mouse se guardan según esa posición.\n\n"
+                "3️⃣ CÓDIGO DE COLORES DE LOS BOTONES:\n"
+                "   • 🔴 Botón Rojo Oscuro: Falta marcar esa zona en la pantalla.\n"
+                "   • 🟢 Botón Verde: La zona ya está configurada y guardada.\n"
+                "   • Para marcar cualquier zona: toca el botón, la pantalla se pondrá semitransparente,\n"
+                "     arrastra un recuadro rojo con click izquierdo sobre el juego y suelta.\n\n"
+                "4️⃣ ATAJOS RÁPIDOS DENTRO DEL JUEGO:\n"
+                "   • Presiona [F5] para INICIAR el bot en cualquier momento.\n"
+                "   • Presiona [F6] para DETENER el bot inmediatamente (suelta todos los clicks).\n\n"
+                "5️⃣ GUARDADO AUTOMÁTICO:\n"
+                "   • Todos tus ajustes, zonas, colores y calibraciones quedan guardados en 'config.json'\n"
+                "     de forma atómica para que no tengas que reconfigurar al volver a abrir."
+            ),
+            "coords": (
+                "🧭 2. COORDENADAS OCR Y MOVIMIENTO INTELIGENTE (GPS)\n"
+                "══════════════════════════════════════════════════════════════════\n\n"
+                "Este módulo lee los números (X, Y) de tu pantalla y camina solo hasta donde le ordenes.\n\n"
+                "PASO 1 — Marcar 'Zona Coords':\n"
+                "   • Haz click en [Zona Coords] y encuadra ÚNICAMENTE los números de coordenadas\n"
+                "     del juego (por ejemplo, abajo a la izquierda donde dice '142 125').\n"
+                "   • Consejo: No incluyas el nombre del mapa ni bordes decorativos innecesarios.\n\n"
+                "PASO 2 — Ajustar con '🔍 Calibrar OCR':\n"
+                "   • Abre [🔍 Calibrar OCR]. Verás la imagen aumentada y una línea divisoria (X | Y).\n"
+                "   • Mueve la barra 'Umbral' (y 'Invertir' si hace falta) hasta que los números se vean\n"
+                "     negros nítidos sobre fondo blanco y el texto inferior aparezca en VERDE:\n"
+                "     'Detectado: X=142 | Y=125'.\n"
+                "   • Presiona la tecla 'q' o 'ESC' en esa ventana para guardar la calibración.\n\n"
+                "PASO 3 — Marcar '📍 Centro PJ':\n"
+                "   • Haz click en [📍 Centro PJ] y dibuja un pequeño recuadro justo sobre los PIES\n"
+                "     de tu personaje en el centro de la pantalla del juego.\n\n"
+                "PASO 4 — '🎯 Calibrar Ejes' (1 sola vez):\n"
+                "   • Lleva tu PJ a un lugar despejado sin paredes cerca y toca [🎯 Calibrar Ejes].\n"
+                "   • El bot dará 2 pasos de prueba automáticos (derecha y arriba) y aprenderá la\n"
+                "     orientación exacta del mapa isométrico de MU.\n\n"
+                "PASO 5 — Caminar y usar el Spot:\n"
+                "   • Escribe X e Y en la interfaz y toca [🚶 Ir], o desde Telegram envía: /ir 142 125.\n"
+                "   • Si encuentra una pared o árbol en el camino, intentará rodearlo solo.\n"
+                "   • Si cae una joya mientras camina (Prioridad 1), frena, la levanta y sigue viaje.\n"
+                "   • El Spot de caza solo se cambia con /fijarspot; viajar con /ir NO borra tu Spot."
+            ),
+            "pickup": (
+                "💎 3. RECOLECCIÓN (PICKUP) Y 🎨 FORJA DE COLORES HSV\n"
+                "══════════════════════════════════════════════════════════════════\n\n"
+                "1️⃣ CONFIGURAR 'ZONA DE SUELO':\n"
+                "   • Toca [Zona de Suelo] y selecciona el área de juego alrededor de tu PJ donde\n"
+                "     caen los ítems.\n"
+                "   • ⚠️ Importante: NO incluyas la barra inferior de skills/HP ni la ventana de chat\n"
+                "     para que el bot nunca haga click accidental sobre el HUD.\n\n"
+                "2️⃣ ORDEN INTELIGENTE Y CAMINATA DINÁMICA:\n"
+                "   • El bot prioriza SIEMPRE las joyas/ítems especiales por encima del Zen.\n"
+                "   • Dentro de la misma prioridad, levanta primero el ítem más cercano a tu PJ.\n"
+                "   • Espera dinámica según distancia:\n"
+                "     - Joya cerca (<= 70px): espera 0.35s.\n"
+                "     - Joya a media distancia (71-160px): espera 0.75s.\n"
+                "     - Joya lejos (> 160px): espera hasta 1.45s mientras el PJ camina a buscarla.\n"
+                "   • Filtro anti-duplicados (2.2s): evita que una joya lejana se cuente dos veces.\n\n"
+                "3️⃣ AGREGAR Y CALIBRAR COLORES ('🎨 Forja de Colores'):\n"
+                "   • Con [➕ Nuevo Item] puedes añadir cualquier joya o caja (ej: 'bless', 'chaos').\n"
+                "   • Por seguridad, un ítem nuevo se crea desactivado hasta que elijas su color.\n"
+                "   • En [🎨 Forja de Colores] puedes ajustar los rangos HSV (H: 0..179, S/V: 0..255)\n"
+                "     y marcar la casilla '📱 Telegram' en los ítems que quieras que te envíen alerta."
+            ),
+            "combate": (
+                "⚔️ 4. COMBATE (ATAQUE) Y ✨ AURA & PARTY (BUFFS)\n"
+                "══════════════════════════════════════════════════════════════════\n\n"
+                "⚔️ MÓDULO DE BATALLA (AUTO-ATAQUE — PRIORIDAD 4):\n"
+                "   • Toca [Zona de Caza] y marca el área alrededor de tu PJ donde aparecen monstruos.\n"
+                "   • En [🎨 Forja de Colores] puedes ajustar el color de 'Enemigo (Ataque)'.\n"
+                "   • Selección inteligente: cuando ve varios monstruos, apunta automáticamente al\n"
+                "     que está MÁS CERCA del centro de tu PJ.\n"
+                "   • Mantiene presionado el click derecho pero revisa cada 50ms si cayó una joya\n"
+                "     o toca buffear; si ocurre, suelta el click derecho en el acto.\n\n"
+                "✨ MÓDULO DE AURA & PARTY (BUFFS — PRIORIDAD 3):\n"
+                "   • [Marcar Skill]: Haz click y encuadra el ícono del skill/aura en tu barra inferior.\n"
+                "     Puedes agregar varios skills seguidos; el bot los seleccionará con click izquierdo.\n"
+                "   • [Marcar Party]: Encuadra a cada miembro en la lista de Party (arriba a la derecha)\n"
+                "     o marca a tu propio PJ en el centro si bufeas solo. El bot les hará click derecho.\n"
+                "   • [Cooldown Auras]: Define cada cuántos segundos repetir la ronda de buffs (mínimo 5s).\n"
+                "   • En cuanto termina de lanzar las auras, libera inmediatamente el mouse para que\n"
+                "     el PJ siga atacando durante todo el tiempo de Cooldown."
+            ),
+            "telegram": (
+                "📱 5. CONTROL REMOTO POR TELEGRAM Y 📸 MONITOR DE INVENTARIO\n"
+                "══════════════════════════════════════════════════════════════════\n\n"
+                "🔧 CONFIGURAR TU BOT DE TELEGRAM:\n"
+                "   1. En Telegram, escribe a @BotFather -> envía /newbot y copia el TOKEN.\n"
+                "   2. Escribe a @userinfobot para ver tu número de Chat ID.\n"
+                "   3. Abre [📱 Telegram] en el programa, pega ambos datos, marca la casilla\n"
+                "      'Activar Notificaciones y Control por Telegram' y toca [Probar y Enviar Menú].\n\n"
+                "📸 CONFIGURAR EL MONITOR DE INVENTARIO (PRIORIDAD 5):\n"
+                "   • [Botón Inventario]: Encuadra el botón físico del inventario en la barra inferior\n"
+                "     de la interfaz de MU Online (evita bloqueos de teclado por AntiCheat).\n"
+                "   • [Área de Foto]: Encuadra la ventana completa del juego o la zona del inventario.\n\n"
+                "⌨️ LISTA COMPLETA DE COMANDOS DE TELEGRAM:\n"
+                "   • /menu o /ayuda        -> Muestra el panel de botones interactivos.\n"
+                "   • /iniciar | /detener   -> Inicia (F5) o detiene (F6) el bot.\n"
+                "   • /pausa | /reanudar    -> Pausa o reanuda todas las acciones (incluida caminata).\n"
+                "   • /estado o /status     -> Reporte completo (estado, tiempo, coords, spot y joyas).\n"
+                "   • /atacar [on|off]      -> Activa o apaga el modo Combate.\n"
+                "   • /pickup [on|off]      -> Activa o apaga la Recolección.\n"
+                "   • /buff [on|off]        -> Activa o apaga las Magias/Auras.\n"
+                "   • /cooldown <seg>       -> Cambia el tiempo de espera de buffs (ej: /cooldown 60).\n"
+                "   • /items                -> Lista todas las joyas y su estado activo/inactivo.\n"
+                "   • /item <joya> [on|off] -> Activa o apaga una joya (ej: /item zen off).\n"
+                "   • /foto                 -> Envía captura instantánea de la pantalla sin pausar nada.\n"
+                "   • /inventario           -> Espera turno libre (P5), abre inventario, saca foto y cierra.\n"
+                "   • /ir <X> <Y>           -> Camina solo hasta la coordenada (ej: /ir 142 125).\n"
+                "   • /pos                  -> Lee y responde la coordenada actual y el Spot.\n"
+                "   • /fijarspot            -> Guarda tu coordenada actual como nuevo Spot de caza.\n"
+                "   • /volver o /spot       -> Regresa caminando a tu Spot guardado.\n"
+                "   • /cancelar o /stopmove -> Frena inmediatamente cualquier caminata en curso.\n"
+                "   • /calibrar             -> Ejecuta la auto-calibración de ejes remotamente."
+            ),
+            "prioridades": (
+                "⚡ 6. ARQUITECTURA DEL MOTOR DE 5 PRIORIDADES\n"
+                "══════════════════════════════════════════════════════════════════\n\n"
+                "Cuando tienes TODOS los módulos activos al mismo tiempo, el bot coordina los hilos\n"
+                "automáticamente respetando este orden de mando de mayor a menor urgencia:\n\n"
+                "   🥇 1° PRIORIDAD — RECOLECCIÓN (PICKUP):\n"
+                "      Si cae una joya al suelo, toma el mando al instante. Ataque suelta el click\n"
+                "      derecho en <= 50ms, Caminar y Buff esperan, el PJ camina hasta la joya con\n"
+                "      click izquierdo y no devuelve el control hasta terminar de recogerla.\n\n"
+                "   🥈 2° PRIORIDAD — CAMINAR POR COORDENADAS (/ir o /volver):\n"
+                "      Pausa Buff, Ataque y Monitor mientras viaja al destino. Solo cede ante\n"
+                "      Prioridad 1: si ve una joya en el camino, frena a levantarla, re-lee su\n"
+                "      coordenada actual por OCR y sigue caminando hacia la meta.\n\n"
+                "   🥉 3° PRIORIDAD — BUFFEO (AURAS & PARTY):\n"
+                "      Espera si estás levantando una joya (1°) o caminando (2°). Cuando están\n"
+                "      libres, pausa el Ataque (4°) medio segundo, tira las auras y libera el\n"
+                "      mouse de inmediato durante todo el Cooldown.\n\n"
+                "   ⚔️ 4° PRIORIDAD — ATAQUE (COMBATE):\n"
+                "      Ataca sin parar al monstruo más cercano siempre que 1°, 2°, 3° y 5° estén\n"
+                "      inactivos, soltando el botón derecho en <= 50ms apenas entra algo superior.\n\n"
+                "   🎒 5° PRIORIDAD — FOTO DE INVENTARIO (MONITOR):\n"
+                "      Nunca interrumpe una recolección, caminata ni buffeo. Espera en cola a que\n"
+                "      terminen, pausa brevemente el ataque, abre el inventario, fotografía y cierra."
+            )
+        }
+
+        tab_buttons = [
+            ("🚀 1. Inicio Rápido", "inicio"),
+            ("🧭 2. Coords & GPS", "coords"),
+            ("💎 3. Pickup & Colores", "pickup"),
+            ("⚔️ 4. Ataque & Buffs", "combate"),
+            ("📱 5. Telegram & Monitor", "telegram"),
+            ("⚡ 6. Prioridades", "prioridades")
+        ]
+
+        self.tab_btn_widgets = {}
+        for label, key in tab_buttons:
+            b = tk.Button(
+                nav_frame, text=label, font=("Helvetica", 9, "bold"),
+                bg=MU_BTN_BG, fg=MU_BTN_FG, activebackground=MU_ACCENT, activeforeground=MU_FG,
+                relief="raised", bd=2, padx=6, pady=4,
+                command=lambda k=key: self.show_section(k)
+            )
+            b.pack(side=tk.LEFT, padx=3, expand=True, fill=tk.X)
+            self.tab_btn_widgets[key] = b
+
+        text_container = tk.Frame(self, bg=MU_FRAME_BG, bd=2, relief="ridge")
+        text_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=8)
+
+        scrollbar = tk.Scrollbar(text_container, orient="vertical")
+        self.guide_text = tk.Text(
+            text_container, bg="#111111", fg="#F0E6D2", font=("Consolas", 10),
+            wrap=tk.WORD, yscrollcommand=scrollbar.set, padx=14, pady=12, bd=0
+        )
+        scrollbar.config(command=self.guide_text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.guide_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        footer = tk.Frame(self, bg=MU_BG)
+        footer.pack(fill=tk.X, pady=(0, 10))
+        create_mu_button(footer, "Cerrar Guía", self.destroy, bg="#556B2F").pack()
+
+        self.show_section("inicio")
+
+    def show_section(self, key):
+        for k, btn in self.tab_btn_widgets.items():
+            btn.config(bg="#006400" if k == key else MU_BTN_BG)
+        self.guide_text.config(state=tk.NORMAL)
+        self.guide_text.delete("1.0", tk.END)
+        self.guide_text.insert(tk.END, self.sections.get(key, ""))
+        self.guide_text.see("1.0")
+        self.guide_text.config(state=tk.DISABLED)
+
 # ----- Utilidades de UI -----
 def create_mu_button(parent, text, command, bg=MU_BTN_BG):
     return tk.Button(parent, text=text, command=command, font=MU_FONT, bg=bg, fg=MU_BTN_FG, 
@@ -2015,6 +2227,7 @@ class Application(tk.Tk):
         bottom_frame = tk.Frame(self, bg=MU_BG)
         bottom_frame.pack(side=tk.BOTTOM, pady=10)
         
+        create_mu_button(bottom_frame, "📖 Guía de Uso", lambda: HelpGuideWindow(self), bg="#4B0082").pack(side=tk.LEFT, padx=5)
         create_mu_button(bottom_frame, "💾 Guardar Perfil", self.save_config).pack(side=tk.LEFT, padx=5)
         create_mu_button(bottom_frame, "🎨 Forja de Colores", lambda: ColorEditor(self), bg="#8B6508").pack(side=tk.LEFT, padx=5)
         create_mu_button(bottom_frame, "📱 Telegram", lambda: TelegramConfig(self), bg="#1d5f8c").pack(side=tk.LEFT, padx=5)
