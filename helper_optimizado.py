@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox, colorchooser, simpledialog
+from contextlib import contextmanager
 import threading, time, json, os, sys, re, shutil, math
 import cv2
 import numpy as np
@@ -8,6 +9,8 @@ import keyboard
 import mss
 import requests
 import pytesseract
+
+pydirectinput.PAUSE = 0.01
 
 # --- CONFIGURACIÓN AUTOMÁTICA DE TESSERACT OCR ---
 def setup_tesseract():
@@ -52,7 +55,9 @@ stats = {
     "target_coords": None
 }
 
-# ----- Configuración y Guardado -----
+config_lock = threading.Lock()
+
+# ----- Configuración y Guardado Atómico -----
 class Config:
     def __init__(self):
         self.config_file = 'config.json'
@@ -99,39 +104,99 @@ class Config:
         }
         self.load()
         
-        if "pickup_colors" in self.data:
-            for key, value in self.data["pickup_colors"].items():
-                if "active" not in value: self.data["pickup_colors"][key]["active"] = True
-                if "notify" not in value: self.data["pickup_colors"][key]["notify"] = (key != "zen")
-                    
+        if not isinstance(self.data.get("pickup_colors"), dict):
+            self.data["pickup_colors"] = {}
+        for key, value in self.data["pickup_colors"].items():
+            if "active" not in value: self.data["pickup_colors"][key]["active"] = True
+            if "notify" not in value: self.data["pickup_colors"][key]["notify"] = (key != "zen")
+                
         if "attack_enabled" not in self.data: self.data["attack_enabled"] = False
         if "attack_area" not in self.data: self.data["attack_area"] = None
         if "attack_color" not in self.data: self.data["attack_color"] = {"lower": [0, 200, 200], "upper": [10, 255, 255]}
-        if "telegram" not in self.data: self.data["telegram"] = {"enabled": False, "token": "", "chat_id": ""}
-        if "monitor" not in self.data: self.data["monitor"] = {"enabled": False, "interval_minutes": 30, "button_area": None, "area": None}
-        if "coords" not in self.data:
-            self.data["coords"] = {"enabled": False, "area": None, "threshold": 150, "invert": True, "char_center": None, "calibration": None, "tolerance": 1}
-        if "threshold" not in self.data["coords"]: self.data["coords"]["threshold"] = 150
-        if "invert" not in self.data["coords"]: self.data["coords"]["invert"] = True
-        if "char_center" not in self.data["coords"]: self.data["coords"]["char_center"] = None
-        if "calibration" not in self.data["coords"]: self.data["coords"]["calibration"] = None
-        if "tolerance" not in self.data["coords"]: self.data["coords"]["tolerance"] = 1
+        if not isinstance(self.data.get("telegram"), dict):
+            self.data["telegram"] = {"enabled": False, "token": "", "chat_id": ""}
+        for k, v in {"enabled": False, "token": "", "chat_id": ""}.items():
+            self.data["telegram"].setdefault(k, v)
+        if not isinstance(self.data.get("monitor"), dict):
+            self.data["monitor"] = {"enabled": False, "interval_minutes": 30, "button_area": None, "area": None}
+        for k, v in {"enabled": False, "interval_minutes": 30, "button_area": None, "area": None}.items():
+            self.data["monitor"].setdefault(k, v)
+        if not isinstance(self.data.get("coords"), dict):
+            self.data["coords"] = {}
+        for k, v in {"enabled": False, "area": None, "threshold": 150, "invert": True, "char_center": None, "calibration": None, "tolerance": 1}.items():
+            self.data["coords"].setdefault(k, v)
         
-        # Limpiar key vieja si existe
         if "key" in self.data["monitor"]:
             del self.data["monitor"]["key"]
 
     def load(self):
         if os.path.exists(self.config_file):
-            with open(self.config_file, "r") as f:
-                loaded_data = json.load(f)
-                self.data.update(loaded_data)
+            try:
+                with open(self.config_file, "r", encoding="utf-8") as f:
+                    loaded_data = json.load(f)
+                if isinstance(loaded_data, dict):
+                    self.data.update(loaded_data)
+            except Exception:
+                pass
 
     def save(self):
-        with open(self.config_file, "w") as f:
-            json.dump(self.data, f, indent=4)
+        with config_lock:
+            tmp_file = f"{self.config_file}.tmp"
+            try:
+                with open(tmp_file, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, indent=4)
+                os.replace(tmp_file, self.config_file)
+            except Exception:
+                try:
+                    with open(self.config_file, "w", encoding="utf-8") as f:
+                        json.dump(self.data, f, indent=4)
+                except Exception:
+                    pass
 
 config = Config()
+
+def is_valid_roi(area):
+    """Verifica que un diccionario de área tenga coordenadas válidas con ancho y alto > 0."""
+    if not isinstance(area, dict):
+        return False
+    try:
+        return int(area["x2"]) > int(area["x1"]) and int(area["y2"]) > int(area["y1"])
+    except Exception:
+        return False
+
+# ----- Controlador Seguro de Mouse (Evita clicks simultáneos o botones pegados) -----
+input_lock = threading.Lock()
+
+@contextmanager
+def held_mouse_button(button):
+    """Garantiza que mouseUp se ejecute siempre en el bloque finally aunque ocurra una excepción."""
+    pydirectinput.mouseDown(button=button)
+    try:
+        yield
+    finally:
+        try:
+            pydirectinput.mouseUp(button=button)
+        except Exception:
+            pass
+
+def safe_click(cx, cy, button='left', hold=0.08, hover=True):
+    """Mueve el cursor (con micro-movimiento DirectX opcional) y hace click de forma atómica y segura."""
+    with input_lock:
+        pydirectinput.moveTo(int(cx), int(cy))
+        if hover:
+            time.sleep(0.04)
+            pydirectinput.moveTo(int(cx) + 1, int(cy) + 1)
+        time.sleep(0.04)
+        with held_mouse_button(button):
+            time.sleep(hold)
+
+def release_all_mouse_buttons():
+    """Suelta preventivamente ambos botones del mouse al pausar o detener el bot."""
+    for btn in ('left', 'right'):
+        try:
+            pydirectinput.mouseUp(button=btn)
+        except Exception:
+            pass
 
 # ----- Teclado Interactivo de Telegram -----
 def get_telegram_keyboard():
@@ -151,34 +216,37 @@ def get_telegram_keyboard():
 
 # ----- Funciones Telegram -----
 def send_telegram_async(msg, with_keyboard=False):
-    token = config.data["telegram"]["token"]
-    chat_id = config.data["telegram"]["chat_id"]
+    token = config.data["telegram"].get("token", "").strip()
+    chat_id = str(config.data["telegram"].get("chat_id", "")).strip()
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {"chat_id": chat_id, "text": msg}
         if with_keyboard:
             payload["reply_markup"] = json.dumps(get_telegram_keyboard())
         try:
-            requests.post(url, data=payload, timeout=5)
-        except:
+            requests.post(url, data=payload, timeout=6)
+        except Exception:
             pass
 
 def send_telegram(msg, with_keyboard=False):
     threading.Thread(target=send_telegram_async, args=(msg, with_keyboard), daemon=True).start()
 
 def send_telegram_photo_async(photo_path, caption="📸 Estado del Inventario."):
-    token = config.data["telegram"]["token"]
-    chat_id = config.data["telegram"]["chat_id"]
+    token = config.data["telegram"].get("token", "").strip()
+    chat_id = str(config.data["telegram"].get("chat_id", "")).strip()
     if token and chat_id:
         url = f"https://api.telegram.org/bot{token}/sendPhoto"
         try:
             with open(photo_path, "rb") as f:
                 requests.post(url, data={"chat_id": chat_id, "caption": caption}, files={"photo": f}, timeout=15)
-        except:
+        except Exception:
             pass
         finally:
-            try: os.remove(photo_path)
-            except: pass
+            try:
+                if os.path.exists(photo_path):
+                    os.remove(photo_path)
+            except Exception:
+                pass
 
 # ----- Configuración de Telegram (UI) -----
 class TelegramConfig(tk.Toplevel):
@@ -232,7 +300,7 @@ class TelegramConfig(tk.Toplevel):
                 "text": "¡Hola! 🤖 Panel de control remoto de MU Online activado.\nUsa los botones de abajo o escribe /ayuda para ver todos los comandos.",
                 "reply_markup": json.dumps(get_telegram_keyboard())
             }
-            res = requests.post(url, data=payload)
+            res = requests.post(url, data=payload, timeout=6)
             if res.status_code == 200:
                 messagebox.showinfo("Éxito", "Mensaje y teclado de control enviados. Revisa tu Telegram.")
             else:
@@ -256,6 +324,7 @@ class TelegramConfig(tk.Toplevel):
 #   4° Ataque      (cede ante 1, 2, 3 y 5)
 #   5° Foto Inv.   (photo_active: espera a que 1, 2 y 3 estén libres, y pausa 4 mientras saca la foto)
 running = False
+session_id = 0           # ID generacional de sesión para evitar hilos duplicados en reinicios rápidos (F6 -> F5)
 manual_pause = False     # Pausa manual solicitada desde Telegram (/pausa)
 pickup_active = False    # Prioridad 1: Hay joyas en el suelo y el PJ las está levantando
 moving_to_coords = False # Prioridad 2: El PJ está caminando hacia una coordenada
@@ -263,6 +332,7 @@ buff_active = False      # Prioridad 3: El PJ está lanzando la ronda de auras/b
 photo_active = False     # Prioridad 5: Abriendo inventario para tomar captura
 bot_paused = False       # Compatibilidad general
 move_lock = threading.Lock()
+inventory_lock = threading.Lock()
 app_instance = None      # Referencia a la ventana principal para sincronizar UI
 
 def sync_ui_from_config():
@@ -278,16 +348,16 @@ def sync_ui_from_config():
 def get_character_screen_center():
     """Obtiene el punto central (x, y) donde está parado el PJ en la pantalla."""
     char_area = config.data["coords"].get("char_center")
-    if char_area:
+    if is_valid_roi(char_area):
         return (char_area["x1"] + char_area["x2"]) // 2, (char_area["y1"] + char_area["y2"]) // 2
 
     for key in ("attack_area", "pickup_area"):
         area = config.data.get(key)
-        if area:
+        if is_valid_roi(area):
             return (area["x1"] + area["x2"]) // 2, (area["y1"] + area["y2"]) // 2
 
     mon_area = config.data["monitor"].get("area")
-    if mon_area:
+    if is_valid_roi(mon_area):
         return (mon_area["x1"] + mon_area["x2"]) // 2, (mon_area["y1"] + mon_area["y2"]) // 2 - 30
 
     return 400, 295
@@ -296,7 +366,7 @@ def get_playable_bounds():
     """Devuelve los límites seguros donde hacer click para caminar sin tocar el HUD."""
     for key in ("attack_area", "pickup_area"):
         area = config.data.get(key)
-        if area:
+        if is_valid_roi(area) and (area["x2"] - area["x1"] > 60) and (area["y2"] - area["y1"] > 60):
             return area["x1"] + 25, area["y1"] + 25, area["x2"] - 25, area["y2"] - 25
     cx, cy = get_character_screen_center()
     return max(20, cx - 260), max(30, cy - 200), cx + 260, cy + 190
@@ -304,278 +374,286 @@ def get_playable_bounds():
 # ----- Funciones en Hilos (Lógica del Bot con 5 Prioridades) -----
 
 # PRIORIDAD 1: RECOLECCIÓN (PICKUP)
-def pickup_process(log_widget):
-    global running, config, stats, pickup_active, manual_pause, photo_active
+def pickup_process(log_widget, my_session):
+    global running, session_id, config, stats, pickup_active, manual_pause, photo_active
     last_counted_time = {}  # Evita contar o notificar doble si una joya lejana requiere 2 clicks mientras camina
     with mss.mss() as sct:
-        while running:
-            if manual_pause or photo_active:
-                pickup_active = False
-                time.sleep(0.3)
-                continue
-            if not config.data.get("pickup_area") or not config.data.get("pickup_enabled", False):
-                pickup_active = False
-                time.sleep(0.6)
-                continue
-
-            area = config.data["pickup_area"]
-            monitor = {"top": area["y1"], "left": area["x1"], "width": area["x2"] - area["x1"], "height": area["y2"] - area["y1"]}
-            img = np.array(sct.grab(monitor))
-            bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-            clicks_to_make = []
-            char_x, char_y = get_character_screen_center()
-            
-            for obj_name, obj_conf in list(config.data["pickup_colors"].items()):
-                if not obj_conf.get("active", True): continue
-                lower = np.array(obj_conf["lower"], dtype=np.uint8)
-                upper = np.array(obj_conf["upper"], dtype=np.uint8)
-                mask = cv2.inRange(hsv, lower, upper)
-                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                for cnt in contours:
-                    if cv2.contourArea(cnt) < 5: continue
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    center_x = area["x1"] + x + w // 2
-                    center_y = area["y1"] + y + h // 2
-                    px_dist = math.hypot(center_x - char_x, center_y - char_y)
-                    # Priorizamos joyas importantes (notify=True o != zen) por encima del zen, y luego las más cercanas al PJ
-                    is_zen = (obj_name == "zen")
-                    clicks_to_make.append((is_zen, px_dist, center_x, center_y, obj_name))
-
-            if clicks_to_make:
-                # Ordenar: primero joyas valiosas (is_zen=False), luego por cercanía al PJ
-                clicks_to_make.sort(key=lambda item: (item[0], item[1]))
-
-                if not pickup_active:
-                    pickup_active = True
-                    # Dar 70ms para que Ataque suelte el click derecho antes de hacer click izquierdo en la joya
-                    time.sleep(0.07)
-
-                for _, px_dist, cx, cy, item in clicks_to_make:
-                    if not running or manual_pause or photo_active or not config.data.get("pickup_enabled", False):
-                        break
-
-                    # Click con micro-movimiento (hover trick) para asegurar que MU registre el click sobre el ítem
-                    pydirectinput.moveTo(cx, cy)
-                    time.sleep(0.04)
-                    pydirectinput.moveTo(cx + 1, cy + 1)
-                    time.sleep(0.04)
-                    pydirectinput.mouseDown(button='left')
-                    time.sleep(0.08)
-                    pydirectinput.mouseUp(button='left')
-
-                    # Tiempo de espera dinámico según qué tan lejos cayó la joya del PJ
-                    if px_dist <= 70:
-                        walk_wait = 0.35
-                    elif px_dist <= 160:
-                        walk_wait = 0.75
-                    else:
-                        walk_wait = min(1.45, 0.75 + (px_dist - 160) / 180.0)
-
-                    log_message(f"Pickup [P1]: Recogiendo {item} (dist: {int(px_dist)}px, espera: {walk_wait:.2f}s)", log_widget)
-
-                    now = time.time()
-                    # Si la joya estaba lejos y toma más de 1 click llegar, solo sumamos a la estadística 1 vez cada 2.2s
-                    if now - last_counted_time.get(item, 0) >= 2.2:
-                        last_counted_time[item] = now
-                        if item not in stats["items"]: stats["items"][item] = 0
-                        stats["items"][item] += 1
-                        
-                        if config.data["telegram"]["enabled"] and config.data["pickup_colors"][item].get("notify", False):
-                            elapsed = int(now - stats["start_time"]) if stats["start_time"] else 0
-                            hrs, rem = divmod(elapsed, 3600)
-                            mins, secs = divmod(rem, 60)
-                            time_str = f"{hrs:02d}:{mins:02d}:{secs:02d}"
-                            items_str = "\n".join([f"🔹 {k.capitalize()}: {v}" for k, v in stats["items"].items()])
-                            msg = f"💎 ¡Nuevo ítem recogido: {item.capitalize()}!\n\n📊 REPORTE DE FARMEO:\n⏳ Tiempo: {time_str}\n{items_str}"
-                            send_telegram(msg)
-
-                    # Esperar mientras el PJ camina hacia la joya (manteniendo pickup_active=True para que nadie le quite el mouse)
-                    steps_sleep = max(1, int(walk_wait / 0.05))
-                    for _ in range(steps_sleep):
-                        if not running or manual_pause:
-                            break
-                        time.sleep(0.05)
-                    # Si la joya estaba lejos, re-evaluamos la pantalla tras este click para ver si ya la levantó
-                    if px_dist > 90:
-                        break
-            else:
-                if pickup_active:
+        while running and session_id == my_session:
+            try:
+                if manual_pause or photo_active:
                     pickup_active = False
-                time.sleep(0.1)
+                    time.sleep(0.3)
+                    continue
+                area = config.data.get("pickup_area")
+                if not is_valid_roi(area) or not config.data.get("pickup_enabled", False):
+                    pickup_active = False
+                    time.sleep(0.6)
+                    continue
+
+                monitor = {"top": area["y1"], "left": area["x1"], "width": area["x2"] - area["x1"], "height": area["y2"] - area["y1"]}
+                img = np.array(sct.grab(monitor))
+                bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+                clicks_to_make = []
+                char_x, char_y = get_character_screen_center()
+                
+                for obj_name, obj_conf in list(config.data["pickup_colors"].items()):
+                    if not obj_conf.get("active", True): continue
+                    lower = np.array(obj_conf["lower"], dtype=np.uint8)
+                    upper = np.array(obj_conf["upper"], dtype=np.uint8)
+                    mask = cv2.inRange(hsv, lower, upper)
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for cnt in contours:
+                        if cv2.contourArea(cnt) < 5: continue
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        center_x = area["x1"] + x + w // 2
+                        center_y = area["y1"] + y + h // 2
+                        px_dist = math.hypot(center_x - char_x, center_y - char_y)
+                        is_zen = (obj_name == "zen")
+                        clicks_to_make.append((is_zen, px_dist, center_x, center_y, obj_name))
+
+                if clicks_to_make:
+                    # Ordenar: primero joyas valiosas (is_zen=False), luego por cercanía al PJ
+                    clicks_to_make.sort(key=lambda item: (item[0], item[1]))
+
+                    if not pickup_active:
+                        pickup_active = True
+                        # Dar 70ms para que Ataque suelte el click derecho antes de hacer click izquierdo en la joya
+                        time.sleep(0.07)
+
+                    for _, px_dist, cx, cy, item in clicks_to_make:
+                        if (not running or session_id != my_session or manual_pause
+                                or photo_active or not config.data.get("pickup_enabled", False)):
+                            break
+
+                        safe_click(cx, cy, button='left', hold=0.08, hover=True)
+
+                        # Tiempo de espera dinámico según qué tan lejos cayó la joya del PJ
+                        if px_dist <= 70:
+                            walk_wait = 0.35
+                        elif px_dist <= 160:
+                            walk_wait = 0.75
+                        else:
+                            walk_wait = min(1.45, 0.75 + (px_dist - 160) / 180.0)
+
+                        log_message(f"Pickup [P1]: Recogiendo {item} (dist: {int(px_dist)}px, espera: {walk_wait:.2f}s)", log_widget)
+
+                        now = time.time()
+                        # Si la joya estaba lejos y toma más de 1 click llegar, solo sumamos a la estadística 1 vez cada 2.2s
+                        if now - last_counted_time.get(item, 0) >= 2.2:
+                            last_counted_time[item] = now
+                            if item not in stats["items"]: stats["items"][item] = 0
+                            stats["items"][item] += 1
+                            
+                            if config.data["telegram"]["enabled"] and config.data["pickup_colors"].get(item, {}).get("notify", False):
+                                elapsed = int(now - stats["start_time"]) if stats["start_time"] else 0
+                                hrs, rem = divmod(elapsed, 3600)
+                                mins, secs = divmod(rem, 60)
+                                time_str = f"{hrs:02d}:{mins:02d}:{secs:02d}"
+                                items_str = "\n".join([f"🔹 {k.capitalize()}: {v}" for k, v in stats["items"].items()])
+                                msg = f"💎 ¡Nuevo ítem recogido: {item.capitalize()}!\n\n📊 REPORTE DE FARMEO:\n⏳ Tiempo: {time_str}\n{items_str}"
+                                send_telegram(msg)
+
+                        # Esperar mientras el PJ camina hacia la joya (manteniendo pickup_active=True para que nadie le quite el mouse)
+                        steps_sleep = max(1, int(walk_wait / 0.05))
+                        for _ in range(steps_sleep):
+                            if not running or session_id != my_session or manual_pause:
+                                break
+                            time.sleep(0.05)
+                        # Si la joya estaba lejos, re-evaluamos la pantalla tras este click para ver si ya la levantó
+                        if px_dist > 90:
+                            break
+                else:
+                    if pickup_active:
+                        pickup_active = False
+                    time.sleep(0.1)
+            except Exception as e:
+                pickup_active = False
+                log_message(f"⚠️ Aviso Pickup: {e}", log_widget)
+                time.sleep(0.5)
+    pickup_active = False
 
 # PRIORIDAD 3: BUFFEO (AURAS & PARTY) — Cede ante P1 (Recolección) y P2 (Caminar)
-def buffing_process(log_widget, cooldown_label):
-    global running, config, pickup_active, moving_to_coords, buff_active, photo_active, manual_pause
-    while running:
-        if manual_pause or not config.data.get("buff_enabled", True):
-            buff_active = False
-            time.sleep(0.5)
-            continue
+def buffing_process(log_widget, cooldown_label, my_session):
+    global running, session_id, config, pickup_active, moving_to_coords, buff_active, photo_active, manual_pause
+    while running and session_id == my_session:
+        try:
+            if manual_pause or not config.data.get("buff_enabled", True):
+                buff_active = False
+                time.sleep(0.5)
+                continue
 
-        # Esperar si P1 (Pickup), P2 (Caminar) o P5 (Foto en curso) están activos
-        if pickup_active or moving_to_coords or photo_active:
-            buff_active = False
-            time.sleep(0.2)
-            continue
-            
-        start_time = time.time()
-        if config.data["buff_skills"] and config.data["buff_players"]:
-            buff_active = True
-            # Dar 70ms para que P4 (Ataque) suelte el click derecho antes de seleccionar el skill
-            time.sleep(0.07)
-
-            for i, skill_area in enumerate(config.data["buff_skills"]):
-                if not running or manual_pause or not config.data.get("buff_enabled", True):
-                    break
-                # Si cae una joya (P1) o llega orden de caminar (P2) a mitad del buffeo, esperar a que terminen
-                while (pickup_active or moving_to_coords) and running and not manual_pause:
-                    buff_active = False
-                    time.sleep(0.1)
+            # Esperar si P1 (Pickup), P2 (Caminar) o P5 (Foto en curso) están activos
+            if pickup_active or moving_to_coords or photo_active:
+                buff_active = False
+                time.sleep(0.2)
+                continue
+                
+            start_time = time.time()
+            if config.data["buff_skills"] and config.data["buff_players"]:
                 buff_active = True
+                # Dar 70ms para que P4 (Ataque) suelte el click derecho antes de seleccionar el skill
+                time.sleep(0.07)
 
-                cx = (skill_area["x1"] + skill_area["x2"]) // 2
-                cy = (skill_area["y1"] + skill_area["y2"]) // 2
-                pydirectinput.moveTo(cx, cy)
-                time.sleep(0.05)
-                pydirectinput.mouseDown(button='left')
-                time.sleep(0.1)
-                pydirectinput.mouseUp(button='left')
-                log_message(f"Buff [P3]: Skill {i+1} seleccionado", log_widget)
-                time.sleep(0.1)
-
-                for j, player_area in enumerate(config.data["buff_players"]):
-                    if not running or manual_pause or not config.data.get("buff_enabled", True):
+                for i, skill_area in enumerate(config.data["buff_skills"]):
+                    if not running or session_id != my_session or manual_pause or not config.data.get("buff_enabled", True):
                         break
-                    while (pickup_active or moving_to_coords) and running and not manual_pause:
+                    # Si cae una joya (P1) o llega orden de caminar (P2) a mitad del buffeo, esperar a que terminen
+                    while (pickup_active or moving_to_coords or photo_active) and running and session_id == my_session and not manual_pause:
                         buff_active = False
                         time.sleep(0.1)
+                    if not running or session_id != my_session or manual_pause or not config.data.get("buff_enabled", True):
+                        break
                     buff_active = True
 
-                    cx_p = (player_area["x1"] + player_area["x2"]) // 2
-                    cy_p = (player_area["y1"] + player_area["y2"]) // 2
-                    pydirectinput.moveTo(cx_p, cy_p)
-                    time.sleep(0.05)
-                    pydirectinput.mouseDown(button='right')
-                    time.sleep(0.1)
-                    pydirectinput.mouseUp(button='right')
-                    log_message(f"Buff [P3]: Jugador {j+1} buffeado", log_widget)
+                    cx = (skill_area["x1"] + skill_area["x2"]) // 2
+                    cy = (skill_area["y1"] + skill_area["y2"]) // 2
+                    safe_click(cx, cy, button='left', hold=0.1, hover=False)
+                    log_message(f"Buff [P3]: Skill {i+1} seleccionado", log_widget)
                     time.sleep(0.1)
 
-            # Terminó de tirar los buffs: liberamos P3 para que P4 (Ataque) siga inmediatamente
-            buff_active = False
-            elapsed = time.time() - start_time
-            cd = config.data["cooldown"]
-            wait_time = max(5, cd - elapsed)
-            remaining = int(wait_time)
-            while remaining > 0 and running and config.data.get("buff_enabled", True):
-                cooldown_label.after(0, lambda r=remaining: cooldown_label.config(text=f"Cooldown: {r} s"))
+                    for j, player_area in enumerate(config.data["buff_players"]):
+                        if not running or session_id != my_session or manual_pause or not config.data.get("buff_enabled", True):
+                            break
+                        while (pickup_active or moving_to_coords or photo_active) and running and session_id == my_session and not manual_pause:
+                            buff_active = False
+                            time.sleep(0.1)
+                        if not running or session_id != my_session or manual_pause or not config.data.get("buff_enabled", True):
+                            break
+                        buff_active = True
+
+                        cx_p = (player_area["x1"] + player_area["x2"]) // 2
+                        cy_p = (player_area["y1"] + player_area["y2"]) // 2
+                        safe_click(cx_p, cy_p, button='right', hold=0.1, hover=False)
+                        log_message(f"Buff [P3]: Jugador {j+1} buffeado", log_widget)
+                        time.sleep(0.1)
+
+                # Terminó de tirar los buffs: liberamos P3 para que P4 (Ataque) siga inmediatamente
+                buff_active = False
+                elapsed = time.time() - start_time
+                cd = max(5, int(config.data.get("cooldown", 15)))
+                wait_time = max(5, cd - elapsed)
+                remaining = int(wait_time)
+                while remaining > 0 and running and session_id == my_session and config.data.get("buff_enabled", True):
+                    try:
+                        cooldown_label.after(0, lambda r=remaining: cooldown_label.config(text=f"Cooldown: {r} s"))
+                    except Exception:
+                        pass
+                    time.sleep(1)
+                    remaining -= 1
+            else:
+                buff_active = False
                 time.sleep(1)
-                remaining -= 1
-        else:
+        except Exception as e:
             buff_active = False
-            time.sleep(1)
+            log_message(f"⚠️ Aviso Buff: {e}", log_widget)
+            time.sleep(0.5)
+    buff_active = False
 
 # PRIORIDAD 4: ATAQUE (COMBATE) — Cede instantáneamente ante P1 (Pickup), P2 (Caminar), P3 (Buff) y P5 (Foto)
-def attack_process(log_widget):
-    global running, config, pickup_active, moving_to_coords, buff_active, photo_active, manual_pause
+def attack_process(log_widget, my_session):
+    global running, session_id, config, pickup_active, moving_to_coords, buff_active, photo_active, manual_pause
     with mss.mss() as sct:
-        while running:
-            if manual_pause or pickup_active or moving_to_coords or buff_active or photo_active:
-                time.sleep(0.1)
-                continue
-            if not config.data.get("attack_enabled", False) or not config.data.get("attack_area"):
-                time.sleep(0.6)
-                continue
+        while running and session_id == my_session:
+            try:
+                if manual_pause or pickup_active or moving_to_coords or buff_active or photo_active:
+                    time.sleep(0.1)
+                    continue
+                area = config.data.get("attack_area")
+                if not config.data.get("attack_enabled", False) or not is_valid_roi(area):
+                    time.sleep(0.6)
+                    continue
 
-            area = config.data["attack_area"]
-            monitor = {"top": area["y1"], "left": area["x1"], "width": area["x2"] - area["x1"], "height": area["y2"] - area["y1"]}
-            img = np.array(sct.grab(monitor))
-            bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-            color_conf = config.data["attack_color"]
-            lower = np.array(color_conf["lower"], dtype=np.uint8)
-            upper = np.array(color_conf["upper"], dtype=np.uint8)
-            mask = cv2.inRange(hsv, lower, upper)
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            target_found = False
+                monitor = {"top": area["y1"], "left": area["x1"], "width": area["x2"] - area["x1"], "height": area["y2"] - area["y1"]}
+                img = np.array(sct.grab(monitor))
+                bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+                color_conf = config.data["attack_color"]
+                lower = np.array(color_conf["lower"], dtype=np.uint8)
+                upper = np.array(color_conf["upper"], dtype=np.uint8)
+                mask = cv2.inRange(hsv, lower, upper)
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                # Seleccionar el monstruo más cercano al centro del PJ (A28)
+                char_x, char_y = get_character_screen_center()
+                candidates = []
+                for cnt in contours:
+                    if cv2.contourArea(cnt) > 5:
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        cx = area["x1"] + x + w // 2
+                        cy = area["y1"] + y + h // 2
+                        dist = math.hypot(cx - char_x, cy - char_y)
+                        candidates.append((dist, cx, cy))
 
-            for cnt in contours:
-                if cv2.contourArea(cnt) > 5:
-                    # Antes de presionar click derecho, verificar que no se haya activado una prioridad mayor
-                    if pickup_active or moving_to_coords or buff_active or photo_active or manual_pause:
-                        break
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    center_x = area["x1"] + x + w // 2
-                    center_y = area["y1"] + y + h // 2
-                    pydirectinput.moveTo(center_x, center_y)
-                    time.sleep(0.04)
+                if candidates and not (pickup_active or moving_to_coords or buff_active or photo_active or manual_pause):
+                    candidates.sort(key=lambda c: c[0])
+                    _, center_x, center_y = candidates[0]
                     log_message("Batalla [P4]: Atacando enemigo!", log_widget)
-                    pydirectinput.mouseDown(button='right')
-                    # Mantener click derecho hasta 1.0s, pero soltar en <= 50ms si entra P1 (Joya), P2 (Caminar) o P3 (Buff)
-                    for _ in range(20):
-                        if (not running or pickup_active or moving_to_coords or buff_active
-                                or photo_active or manual_pause or not config.data.get("attack_enabled", False)):
-                            break
-                        time.sleep(0.05)
-                    pydirectinput.mouseUp(button='right')
-                    target_found = True
-                    break 
-            if not target_found:
-                time.sleep(0.1)
+                    with input_lock:
+                        pydirectinput.moveTo(center_x, center_y)
+                        time.sleep(0.04)
+                        with held_mouse_button('right'):
+                            # Mantener click derecho hasta 1.0s, pero soltar en <= 50ms si entra P1, P2, P3 o P5
+                            for _ in range(20):
+                                if (not running or session_id != my_session or pickup_active or moving_to_coords
+                                        or buff_active or photo_active or manual_pause or not config.data.get("attack_enabled", False)):
+                                    break
+                                time.sleep(0.05)
+                else:
+                    time.sleep(0.1)
+            except Exception as e:
+                release_all_mouse_buttons()
+                log_message(f"⚠️ Aviso Ataque: {e}", log_widget)
+                time.sleep(0.5)
 
-# PRIORIDAD 5: FOTO DE INVENTARIO (MONITOR) — Espera a que P1, P2 y P3 estén libres
+# PRIORIDAD 5: FOTO DE INVENTARIO (MONITOR) — Espera a que P1, P2 y P3 estén libres y usa Lock exclusivo
 def capture_and_send_inventory(log_widget):
     """Abre el inventario con click inteligente, toma captura, lo cierra y envía la foto por Telegram."""
-    global photo_active, pickup_active, moving_to_coords, buff_active
+    global photo_active, pickup_active, moving_to_coords, buff_active, manual_pause
     btn_area = config.data["monitor"].get("button_area")
-    if not btn_area:
+    if not is_valid_roi(btn_area):
         msg = "❌ Falta marcar el 'Botón Inventario' en la interfaz del bot."
         log_message(msg, log_widget)
         send_telegram(msg)
         return
 
+    if not inventory_lock.acquire(blocking=False):
+        log_message("ℹ️ Ya hay una captura de inventario en proceso.", log_widget)
+        return
+
     def _inv_worker():
         global photo_active
-        # Esperar a que P1 (Recolección), P2 (Caminar) y P3 (Buff) estén libres antes de abrir el inventario
-        while pickup_active or moving_to_coords or buff_active:
-            time.sleep(0.25)
-
-        log_message("🚦 Monitor [P5]: Pausando ataque para abrir inventario...", log_widget)
-        photo_active = True
-        time.sleep(1.0)
         try:
+            # Esperar a que P1 (Recolección), P2 (Caminar), P3 (Buff) o Pausa estén libres antes de abrir el inventario
+            while pickup_active or moving_to_coords or buff_active or manual_pause:
+                time.sleep(0.25)
+
+            log_message("🚦 Monitor [P5]: Pausando ataque para abrir inventario...", log_widget)
+            photo_active = True
+            time.sleep(0.8)
             cx = (btn_area["x1"] + btn_area["x2"]) // 2
             cy = (btn_area["y1"] + btn_area["y2"]) // 2
 
-            pydirectinput.moveTo(cx, cy)
-            time.sleep(0.2)
-            pydirectinput.moveTo(cx + 1, cy + 1)
-            time.sleep(0.4)
+            safe_click(cx, cy, button='left', hold=0.3, hover=True)
+            time.sleep(1.4)
 
-            pydirectinput.mouseDown(button='left')
-            time.sleep(0.3)
-            pydirectinput.mouseUp(button='left')
-            time.sleep(1.5)
-
-            filename = f"inventario_{int(time.time())}.png"
+            filename = f"inventario_{int(time.time() * 1000)}.png"
             area_conf = config.data["monitor"].get("area") or config.data.get("attack_area") or config.data.get("pickup_area")
             with mss.mss() as sct:
-                if area_conf:
+                if is_valid_roi(area_conf):
                     mon_dict = {"top": area_conf["y1"], "left": area_conf["x1"], "width": area_conf["x2"] - area_conf["x1"], "height": area_conf["y2"] - area_conf["y1"]}
                     img = np.array(sct.grab(mon_dict))
                     cv2.imwrite(filename, cv2.cvtColor(img, cv2.COLOR_BGRA2BGR))
                 else:
                     sct.shot(mon=-1, output=filename)
 
-            pydirectinput.mouseDown(button='left')
-            time.sleep(0.3)
-            pydirectinput.mouseUp(button='left')
-            time.sleep(0.5)
+            safe_click(cx, cy, button='left', hold=0.3, hover=False)
+            time.sleep(0.4)
 
             threading.Thread(target=send_telegram_photo_async, args=(filename, "🎒 Estado del Inventario"), daemon=True).start()
         finally:
             photo_active = False
+            inventory_lock.release()
             log_message("🚦 Monitor [P5]: Inventario cerrado y bot reanudado.", log_widget)
 
     threading.Thread(target=_inv_worker, daemon=True).start()
@@ -583,10 +661,10 @@ def capture_and_send_inventory(log_widget):
 def capture_and_send_screen(log_widget):
     """Toma una foto instantánea de la pantalla/área del juego sin abrir el inventario ni interrumpir el bot."""
     def _scr_worker():
-        filename = f"pantalla_{int(time.time())}.png"
+        filename = f"pantalla_{int(time.time() * 1000)}.png"
         area_conf = config.data["monitor"].get("area") or config.data.get("attack_area") or config.data.get("pickup_area")
         with mss.mss() as sct:
-            if area_conf:
+            if is_valid_roi(area_conf):
                 mon_dict = {"top": area_conf["y1"], "left": area_conf["x1"], "width": area_conf["x2"] - area_conf["x1"], "height": area_conf["y2"] - area_conf["y1"]}
                 img = np.array(sct.grab(mon_dict))
                 cv2.imwrite(filename, cv2.cvtColor(img, cv2.COLOR_BGRA2BGR))
@@ -598,34 +676,36 @@ def capture_and_send_screen(log_widget):
 
     threading.Thread(target=_scr_worker, daemon=True).start()
 
-def monitor_process(log_widget):
-    global running, config
-    while running:
+def monitor_process(log_widget, my_session):
+    global running, session_id, config, manual_pause
+    while running and session_id == my_session:
         try:
             interval_mins = int(config.data["monitor"].get("interval_minutes", 30))
             enabled = config.data["monitor"].get("enabled", False)
             btn_area = config.data["monitor"].get("button_area")
-        except:
+        except Exception:
             time.sleep(5)
             continue
             
-        if not enabled or interval_mins <= 0 or not btn_area:
+        if not enabled or interval_mins <= 0 or not is_valid_roi(btn_area):
             time.sleep(3)
             continue
         
         interval_secs = interval_mins * 60
         for _ in range(interval_secs):
-            if not running or not config.data["monitor"].get("enabled", False):
+            if not running or session_id != my_session or not config.data["monitor"].get("enabled", False):
                 break
             time.sleep(1)
         
-        if not running or not config.data["monitor"].get("enabled", False):
+        if not running or session_id != my_session or not config.data["monitor"].get("enabled", False):
             continue
-        
-        capture_and_send_inventory(log_widget)
-        time.sleep(5)
+        while manual_pause and running and session_id == my_session:
+            time.sleep(1)
+        if running and session_id == my_session:
+            capture_and_send_inventory(log_widget)
+            time.sleep(5)
 
-# ----- Lector de Coordenadas OCR (V17) -----
+# ----- Lector Único de Coordenadas OCR (Sin duplicados - A01/A09/A25 corregidos) -----
 def preprocess_coords_image(img, thresh_val=150, invert=True):
     gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
     gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
@@ -635,10 +715,11 @@ def preprocess_coords_image(img, thresh_val=150, invert=True):
     return thresh
 
 def find_split_x_and_clean(thresh):
+    """Limpia manchas de los bordes y encuentra el canal de separación exacto entre X e Y."""
     h, w = thresh.shape
     cleaned = thresh.copy()
     fg = 255 - cleaned
-    num_labels, labels, stats_cc, centroids = cv2.connectedComponentsWithStats(fg, connectivity=8)
+    num_labels, labels, stats_cc, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
     
     valid_boxes = []
     for i in range(1, num_labels):
@@ -677,7 +758,7 @@ def find_split_x_and_clean(thresh):
 
 def read_coords_from_screen(sct):
     area = config.data["coords"].get("area")
-    if not area or not TESSERACT_PATH:
+    if not is_valid_roi(area) or not TESSERACT_PATH:
         return None, "", None, None, None
         
     mon_dict = {
@@ -730,7 +811,11 @@ def read_coords_from_screen(sct):
         return None, "", img, thresh, split_x
 
 def read_stable_coords(sct, retries=3, prev_coords=None, max_jump=30):
-    """Lee las coordenadas filtrando posibles lecturas erróneas de 1 frame de OCR."""
+    """
+    Lee las coordenadas filtrando lecturas erróneas de OCR (A09 corregido):
+    - Si prev_coords existe, descarta cualquier lectura cuyo salto supere max_jump.
+    - Si no hay consenso ni lectura dentro de max_jump, devuelve None.
+    """
     readings = []
     for _ in range(retries):
         coords, _, _, _, _ = read_coords_from_screen(sct)
@@ -739,21 +824,26 @@ def read_stable_coords(sct, retries=3, prev_coords=None, max_jump=30):
                 jump = math.hypot(coords[0] - prev_coords[0], coords[1] - prev_coords[1])
                 if jump <= max_jump:
                     return coords
+                # Salto mayor a max_jump: lectura OCR inválida, descartar y reintentar
+                time.sleep(0.1)
+                continue
             readings.append(coords)
             if len(readings) >= 2 and readings[-1] == readings[-2]:
                 return coords
         time.sleep(0.12)
-    return readings[-1] if readings else None
+    if prev_coords is None and readings:
+        return readings[-1]
+    return None
 
-def coords_process(log_widget):
-    global running, photo_active, config, stats, moving_to_coords
+def coords_process(log_widget, my_session):
+    global running, session_id, photo_active, manual_pause, config, stats, moving_to_coords
     last_logged = None
     with mss.mss() as sct:
-        while running:
-            if moving_to_coords:
+        while running and session_id == my_session:
+            if moving_to_coords or manual_pause or photo_active:
                 time.sleep(0.5)
                 continue
-            if photo_active or not config.data["coords"].get("enabled", False) or not config.data["coords"].get("area"):
+            if not config.data["coords"].get("enabled", False) or not is_valid_roi(config.data["coords"].get("area")):
                 time.sleep(1.0)
                 continue
             if not TESSERACT_PATH:
@@ -761,12 +851,12 @@ def coords_process(log_widget):
                 time.sleep(5.0)
                 continue
                 
-            coords, raw_text, _, _, _ = read_coords_from_screen(sct)
+            coords, _, _, _, _ = read_coords_from_screen(sct)
             if coords:
                 stats["current_coords"] = coords
                 if stats["spot_coords"] is None:
                     stats["spot_coords"] = coords
-                    log_message(f"🧭 Spot fijado en coordenadas: X={coords[0]}, Y={coords[1]}", log_widget)
+                    log_message(f"🧭 Spot inicial fijado en: X={coords[0]}, Y={coords[1]}", log_widget)
                 elif coords != last_logged:
                     dx = coords[0] - stats["spot_coords"][0]
                     dy = coords[1] - stats["spot_coords"][1]
@@ -777,7 +867,7 @@ def coords_process(log_widget):
 
 def calibrate_coords_window(log_widget):
     area = config.data["coords"].get("area")
-    if not area:
+    if not is_valid_roi(area):
         messagebox.showwarning("Falta Zona", "Primero marca la 'Zona Coordenadas' en la pantalla del juego.")
         return
     if not TESSERACT_PATH:
@@ -800,7 +890,7 @@ def calibrate_coords_window(log_widget):
                 try:
                     if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
                         break
-                except:
+                except Exception:
                     break
                     
                 t_val = cv2.getTrackbarPos("Umbral", win_name)
@@ -847,17 +937,11 @@ def calibrate_coords_window(log_widget):
 
 # ----- PRIORIDAD 2: MÓDULO DE MOVIMIENTO POR COORDENADAS (Cede ante P1 Recolección, Pausa P3/P4/P5) -----
 def perform_walk_click(click_x, click_y):
-    """Realiza un click izquierdo compatible con DirectX/MU Online para caminar."""
+    """Realiza un click izquierdo protegido y compatible con DirectX/MU Online para caminar."""
     x1, y1, x2, y2 = get_playable_bounds()
     cx = max(x1, min(x2, int(click_x)))
     cy = max(y1, min(y2, int(click_y)))
-    pydirectinput.moveTo(cx, cy)
-    time.sleep(0.04)
-    pydirectinput.moveTo(cx + 1, cy + 1)
-    time.sleep(0.05)
-    pydirectinput.mouseDown(button='left')
-    time.sleep(0.12)
-    pydirectinput.mouseUp(button='left')
+    safe_click(cx, cy, button='left', hold=0.12, hover=True)
 
 def world_delta_to_screen_unit(dx, dy):
     """
@@ -892,7 +976,7 @@ def calibrate_movement_axes(log_widget, notify_telegram=False):
     por OCR para aprender automáticamente la orientación exacta de los ejes X/Y.
     """
     global moving_to_coords
-    if not config.data["coords"].get("area"):
+    if not is_valid_roi(config.data["coords"].get("area")):
         msg = "❌ Primero marca la 'Zona Coords' antes de calibrar el movimiento."
         log_message(msg, log_widget)
         if notify_telegram: send_telegram(msg)
@@ -982,11 +1066,12 @@ def calibrate_movement_axes(log_widget, notify_telegram=False):
 def move_to_coordinates(target_x, target_y, log_widget, notify_telegram=True):
     """
     Prioridad 2: Mueve el PJ haciendo clicks en pantalla hasta llegar a (target_x, target_y).
-    Si en el camino detecta una joya en el piso (Prioridad 1: pickup_active), espera a que la levante y luego continúa.
+    - Si detecta una joya en el piso (Prioridad 1: pickup_active), espera a que la levante y continúa.
+    - Respeta /pausa (A02) y no sobrescribe el Spot de caza al llegar (A08).
     """
-    global moving_to_coords, pickup_active, stats
+    global moving_to_coords, pickup_active, manual_pause, stats
 
-    if not config.data["coords"].get("area"):
+    if not is_valid_roi(config.data["coords"].get("area")):
         msg = "❌ No está marcada la 'Zona Coords' para leer las coordenadas."
         log_message(msg, log_widget)
         if notify_telegram: send_telegram(msg)
@@ -998,18 +1083,24 @@ def move_to_coordinates(target_x, target_y, log_widget, notify_telegram=True):
         if notify_telegram: send_telegram(msg)
         return False
 
-    stats["target_coords"] = (int(target_x), int(target_y))
-    if moving_to_coords:
+    # Si ya está caminando hacia una coordenada, actualizamos el destino en caliente (A27)
+    if moving_to_coords and stats.get("target_coords") is not None:
+        stats["target_coords"] = (int(target_x), int(target_y))
         msg = f"🧭 Destino actualizado en caliente a ({target_x}, {target_y})."
         log_message(msg, log_widget)
         if notify_telegram: send_telegram(msg)
         return True
 
     if not move_lock.acquire(blocking=False):
+        msg = "⚠️ El personaje está ocupado en una calibración. Intenta en unos segundos."
+        log_message(msg, log_widget)
+        if notify_telegram: send_telegram(msg)
         return False
 
+    stats["target_coords"] = (int(target_x), int(target_y))
+
     def _move_worker():
-        global moving_to_coords, pickup_active, stats
+        global moving_to_coords, pickup_active, manual_pause, stats
         moving_to_coords = True
         tolerance = int(config.data["coords"].get("tolerance", 1))
         angle_correction = 0.0
@@ -1027,25 +1118,40 @@ def move_to_coordinates(target_x, target_y, log_widget, notify_telegram=True):
             with mss.mss() as sct:
                 curr = read_stable_coords(sct, retries=4, prev_coords=stats.get("current_coords"))
                 if not curr:
+                    curr = read_stable_coords(sct, retries=4, prev_coords=None)
+                if not curr:
                     msg = "❌ No se pudo leer la coordenada inicial en pantalla. Verifica que el juego esté visible."
                     log_message(msg, log_widget)
                     if notify_telegram: send_telegram(msg)
                     return
 
                 stats["current_coords"] = curr
+                if stats["spot_coords"] is None:
+                    stats["spot_coords"] = curr
 
-                for step in range(1, max_steps + 1):
+                for _ in range(1, max_steps + 1):
                     if not moving_to_coords:
                         log_message("⏹ Movimiento por coordenadas cancelado.", log_widget)
                         if notify_telegram: send_telegram("⏹ Movimiento cancelado.")
                         return
+
+                    # Respetar /pausa durante la navegación (A02)
+                    if manual_pause:
+                        log_message("⏸ [P2] Caminata en pausa. Esperando /reanudar...", log_widget)
+                        while manual_pause and moving_to_coords:
+                            time.sleep(0.2)
+                        if not moving_to_coords:
+                            return
+                        after_pause = read_stable_coords(sct, retries=3, prev_coords=curr, max_jump=30)
+                        if after_pause:
+                            curr = after_pause
+                            stats["current_coords"] = curr
 
                     # Ceder ante Prioridad 1 (Recolección): si ve una joya en el camino, espera a levantarla
                     if pickup_active:
                         log_message("💎 [P1 > P2] Pausando caminata un instante para recoger ítem...", log_widget)
                         while pickup_active and moving_to_coords:
                             time.sleep(0.1)
-                        # Actualizar posición actual tras haber caminado hacia la joya
                         after_pickup = read_stable_coords(sct, retries=3, prev_coords=curr, max_jump=25)
                         if after_pickup:
                             curr = after_pickup
@@ -1063,9 +1169,10 @@ def move_to_coordinates(target_x, target_y, log_widget, notify_telegram=True):
                             curr = confirm
                             stats["current_coords"] = curr
                         if abs(tx - curr[0]) <= tolerance and abs(ty - curr[1]) <= tolerance:
-                            stats["spot_coords"] = curr
+                            # A08 corregido: NO sobrescribir stats["spot_coords"] al llegar con /ir
                             stats["target_coords"] = None
-                            msg = f"✅ ¡Llegamos al destino! Coordenada actual: ({curr[0]}, {curr[1]}). Spot actualizado."
+                            spot_info = f" (Spot conservado en {stats['spot_coords']})" if stats.get("spot_coords") else ""
+                            msg = f"✅ ¡Llegamos al destino! Coordenada actual: ({curr[0]}, {curr[1]}){spot_info}."
                             log_message(msg, log_widget)
                             if notify_telegram: send_telegram(msg, with_keyboard=True)
                             return
@@ -1102,13 +1209,13 @@ def move_to_coordinates(target_x, target_y, log_widget, notify_telegram=True):
                     perform_walk_click(click_x, click_y)
 
                     wait_t = 0.85 if dist >= 4 else 0.65
-                    # Dormir en intervalos cortos por si aparece una joya (P1) durante el paso
+                    # Dormir en intervalos cortos por si aparece una joya (P1) o /pausa durante el paso
                     for _ in range(int(wait_t / 0.05)):
-                        if not moving_to_coords or pickup_active:
+                        if not moving_to_coords or pickup_active or manual_pause:
                             break
                         time.sleep(0.05)
 
-                    if pickup_active:
+                    if pickup_active or manual_pause:
                         continue
 
                     new_coords = read_stable_coords(sct, retries=3, prev_coords=curr, max_jump=20)
@@ -1178,6 +1285,11 @@ def telegram_listener_process(log_widget):
     last_update_id = None
 
     while True:
+        # A06 corregido: Si Telegram está desactivado en la configuración, no procesar comandos remotos
+        if not config.data["telegram"].get("enabled", False):
+            time.sleep(2)
+            continue
+
         token = config.data["telegram"].get("token", "").strip()
         chat_id = str(config.data["telegram"].get("chat_id", "")).strip()
         if not token or not chat_id:
@@ -1185,9 +1297,22 @@ def telegram_listener_process(log_widget):
             continue
 
         url = f"https://api.telegram.org/bot{token}/getUpdates"
-        params = {"timeout": 10}
-        if last_update_id is not None:
-            params["offset"] = last_update_id + 1
+
+        # A18 corregido: Inicializar el offset descartando únicamente mensajes viejos anteriores al arranque
+        if last_update_id is None:
+            try:
+                init_res = requests.get(url, params={"timeout": 0, "offset": -1}, timeout=5)
+                if init_res.status_code == 200:
+                    init_data = init_res.json()
+                    results = init_data.get("result", [])
+                    last_update_id = results[-1]["update_id"] if results else 0
+                else:
+                    last_update_id = 0
+            except Exception:
+                time.sleep(3)
+                continue
+
+        params = {"timeout": 10, "offset": last_update_id + 1}
 
         try:
             res = requests.get(url, params=params, timeout=15)
@@ -1203,10 +1328,10 @@ def telegram_listener_process(log_widget):
             for update in data.get("result", []):
                 update_id = update.get("update_id")
                 if update_id is not None:
-                    if last_update_id is None:
-                        last_update_id = update_id
-                        continue
                     last_update_id = update_id
+
+                if not config.data["telegram"].get("enabled", False):
+                    break
 
                 msg_obj = update.get("message") or update.get("edited_message")
                 if not msg_obj:
@@ -1221,9 +1346,6 @@ def telegram_listener_process(log_widget):
                     continue
 
                 handle_telegram_command(text, log_widget)
-
-            if last_update_id is None:
-                last_update_id = 0
 
         except Exception:
             time.sleep(3)
@@ -1255,14 +1377,14 @@ def handle_telegram_command(text, log_widget):
     # 1. Menú y Ayuda
     if cmd_lower in ("/start", "/ayuda", "/help", "ayuda", "/menu", "menu", "❓ ayuda"):
         help_msg = (
-            "🤖 PANEL DE CONTROL — BOT MU MENDOZA\n\n"
+            "🤖 PANEL DE CONTROL — MU ONLINE BOT (Legend V20)\n\n"
             "⚡ PRIORIDAD INTELIGENTE ACTIVA:\n"
             "1° Recolección > 2° Caminar > 3° Buff > 4° Ataque > 5° Foto\n\n"
             "🎮 CONTROL GENERAL:\n"
             "• /iniciar — Inicia el bot (F5)\n"
             "• /detener — Detiene el bot (F6)\n"
             "• /pausa / /reanudar — Pausa o reanuda acciones\n"
-            "• /estado — Reporte completo en vivo\n\n"
+            "• /estado (o /status) — Reporte completo en vivo\n\n"
             "⚔️ MÓDULOS (puedes usar on/off o alternar):\n"
             "• /atacar [on|off] — Activa/desactiva Combate\n"
             "• /pickup [on|off] — Activa/desactiva Recolección\n"
@@ -1280,7 +1402,7 @@ def handle_telegram_command(text, log_widget):
             "• /volver — Camina de regreso al Spot fijado\n"
             "• /fijarspot — Guarda posición actual como Spot\n"
             "• /calibrar — Auto-calibra los ejes en 2 pasos\n"
-            "• /cancelar — Detiene la caminata actual"
+            "• /cancelar (o /stopmove) — Detiene la caminata actual"
         )
         send_telegram(help_msg, with_keyboard=True)
         return
@@ -1305,8 +1427,9 @@ def handle_telegram_command(text, log_widget):
 
     if cmd_lower in ("/pausa", "/pausar", "pausa", "pausar"):
         manual_pause = True
+        release_all_mouse_buttons()
         log_message("⏸ Bot pausado desde Telegram.", log_widget)
-        send_telegram("⏸ Bot en PAUSA. Usa /reanudar para continuar.", with_keyboard=True)
+        send_telegram("⏸ Bot en PAUSA (caminata, ataque, pickup y buffs en espera). Usa /reanudar para continuar.", with_keyboard=True)
         return
 
     if cmd_lower in ("/reanudar", "/continuar", "reanudar", "continuar"):
@@ -1318,7 +1441,7 @@ def handle_telegram_command(text, log_widget):
     # 3. Control de Ataque (Combate)
     if cmd_lower.startswith("/atacar") or cmd_lower.startswith("/ataque") or cmd_lower.startswith("⚔️ ataque"):
         new_state = parse_toggle_arg(cmd_lower, config.data.get("attack_enabled", False))
-        if new_state and not config.data.get("attack_area"):
+        if new_state and not is_valid_roi(config.data.get("attack_area")):
             send_telegram("❌ No puedes activar Ataque porque falta marcar la 'Zona de Caza' en la PC.", with_keyboard=True)
             return
         config.data["attack_enabled"] = new_state
@@ -1334,7 +1457,7 @@ def handle_telegram_command(text, log_widget):
     # 4. Control de Pickup (Recolección)
     if cmd_lower.startswith("/pickup") or cmd_lower.startswith("/loot") or cmd_lower.startswith("💎 pickup"):
         new_state = parse_toggle_arg(cmd_lower, config.data.get("pickup_enabled", False))
-        if new_state and not config.data.get("pickup_area"):
+        if new_state and not is_valid_roi(config.data.get("pickup_area")):
             send_telegram("❌ No puedes activar Pickup porque falta marcar la 'Zona de Suelo' en la PC.", with_keyboard=True)
             return
         config.data["pickup_enabled"] = new_state
@@ -1431,7 +1554,7 @@ def handle_telegram_command(text, log_widget):
         send_telegram(f"🧭 Lector continuo de coordenadas: {'ACTIVADO 🟢' if new_state else 'DESACTIVADO 🔴'}", with_keyboard=True)
         return
 
-    # 8. Consultar posición / estado general
+    # 8. Consultar posición / estado general (/estado y /status soportados - A44)
     if cmd_lower in ("/pos", "/coords", "pos", "coords", "📍 posición"):
         with mss.mss() as sct:
             live_coords = read_stable_coords(sct, retries=2)
@@ -1442,15 +1565,17 @@ def handle_telegram_command(text, log_widget):
         send_telegram(f"📍 Coordenada actual: {curr_str}\n📌 Spot fijado: {spot_str}", with_keyboard=True)
         return
 
-    if cmd_lower in ("/estado", "estado", "📊 estado"):
+    if cmd_lower in ("/estado", "/status", "estado", "status", "📊 estado"):
         with mss.mss() as sct:
-            if config.data["coords"].get("area"):
+            if is_valid_roi(config.data["coords"].get("area")):
                 live_coords = read_stable_coords(sct, retries=2)
                 if live_coords:
                     stats["current_coords"] = live_coords
         curr_str = f"({stats['current_coords'][0]}, {stats['current_coords'][1]})" if stats["current_coords"] else "Sin detectar"
         spot_str = f"({stats['spot_coords'][0]}, {stats['spot_coords'][1]})" if stats["spot_coords"] else "No fijado"
-        if pickup_active:
+        if manual_pause:
+            estado_bot = "Pausado ⏸"
+        elif pickup_active:
             estado_bot = "Levantando Joya [P1] 💎"
         elif moving_to_coords:
             estado_bot = f"Caminando hacia {stats.get('target_coords')} [P2] 🚶"
@@ -1458,8 +1583,6 @@ def handle_telegram_command(text, log_widget):
             estado_bot = "Lanzando Buffs [P3] ✨"
         elif not running:
             estado_bot = "Detenido ⏹"
-        elif manual_pause:
-            estado_bot = "Pausado ⏸"
         else:
             estado_bot = "Activo Farmeando [P4] ⚔️"
 
@@ -1475,7 +1598,7 @@ def handle_telegram_command(text, log_widget):
 
         items_str = "\n".join([f"🔹 {k.capitalize()}: {v}" for k, v in stats["items"].items()]) or "Ninguno aún"
         send_telegram(
-            f"📊 ESTADO DEL BOT MU MENDOZA\n"
+            f"📊 ESTADO DEL BOT — LEGEND V20\n"
             f"🤖 Estado: {estado_bot}\n"
             f"⏳ Tiempo activo: {time_str}\n"
             f"📍 Posición: {curr_str} | Spot: {spot_str}\n\n"
@@ -1488,7 +1611,7 @@ def handle_telegram_command(text, log_widget):
         return
 
     # 9. Cancelar movimiento
-    if cmd_lower in ("/cancelar", "/stopmove", "cancelar"):
+    if cmd_lower in ("/cancelar", "/stopmove", "cancelar", "stopmove"):
         if moving_to_coords:
             cancel_coordinate_movement()
         else:
@@ -1519,7 +1642,7 @@ def handle_telegram_command(text, log_widget):
             sx, sy = stats["spot_coords"]
             move_to_coordinates(sx, sy, log_widget, notify_telegram=True)
         else:
-            send_telegram("⚠️ Aún no hay un Spot guardado.", with_keyboard=True)
+            send_telegram("⚠️ Aún no hay un Spot guardado. Usa `📌 Fijar Spot` (`/fijarspot`) primero.", with_keyboard=True)
         return
 
     # 13. Mover a coordenadas: soporta "/ir 125 130", "/move 125,130", "ir 125 130" o directamente "125 130"
@@ -1534,222 +1657,7 @@ def handle_telegram_command(text, log_widget):
 
     send_telegram("❓ Comando no reconocido. Usa los botones del panel o escribe `/ayuda`.", with_keyboard=True)
 
-# ----- Lector de Coordenadas (OCR) -----
-def preprocess_coords_image(img, thresh_val=150, invert=True):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
-    gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    if invert:
-        gray = cv2.bitwise_not(gray)
-    _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
-    return thresh
-
-def find_split_x_and_clean(thresh):
-    """
-    Limpia manchas de los bordes y encuentra el punto exacto de separación (canal blanco)
-    entre la coordenada X (izquierda) y la coordenada Y (derecha).
-    """
-    h, w = thresh.shape
-    cleaned = thresh.copy()
-    
-    # En la imagen binarizada de Tesseract: fondo = 255 (blanco), dígitos = 0 (negro)
-    fg = (255 - cleaned)
-    num_labels, labels, stats_cc, centroids = cv2.connectedComponentsWithStats(fg, connectivity=8)
-    
-    valid_boxes = []
-    for i in range(1, num_labels):
-        x, y, bw, bh, area = stats_cc[i]
-        touches_border = (x <= 2) or (y <= 2) or (x + bw >= w - 2) or (y + bh >= h - 2)
-        # Si toca el borde, o no tiene altura/ancho de dígito normal, lo borramos a blanco
-        if touches_border or area < 15 or bh < h * 0.25 or bw > w * 0.35:
-            cleaned[labels == i] = 255
-        else:
-            valid_boxes.append((x, y, bw, bh))
-            
-    valid_boxes.sort(key=lambda b: b[0])
-    
-    # Si hay al menos 2 bloques de dígitos, buscamos el espacio horizontal más grande entre ellos
-    if len(valid_boxes) >= 2:
-        max_gap = -999
-        split_x = w // 2
-        curr_right = valid_boxes[0][0] + valid_boxes[0][2]
-        for idx in range(len(valid_boxes) - 1):
-            curr_right = max(curr_right, valid_boxes[idx][0] + valid_boxes[idx][2])
-            next_left = valid_boxes[idx + 1][0]
-            gap = next_left - curr_right
-            if gap > max_gap:
-                max_gap = gap
-                split_x = (curr_right + next_left) // 2
-        if max_gap >= 4:
-            return cleaned, split_x
-
-    # Fallback: buscar la columna más blanca en el tercio central de la imagen
-    c_start = int(w * 0.25)
-    c_end = int(w * 0.75)
-    if c_end > c_start:
-        col_ink = np.sum(cleaned[:, c_start:c_end] == 0, axis=0)
-        split_x = c_start + int(np.argmin(col_ink))
-    else:
-        split_x = w // 2
-    return cleaned, split_x
-
-def read_coords_from_screen(sct):
-    area = config.data["coords"].get("area")
-    if not area or not TESSERACT_PATH:
-        return None, "", None, None, None
-    mon_dict = {
-        "top": area["y1"],
-        "left": area["x1"],
-        "width": max(1, area["x2"] - area["x1"]),
-        "height": max(1, area["y2"] - area["y1"])
-    }
-    img = np.array(sct.grab(mon_dict), dtype=np.uint8)
-    thresh_val = int(config.data["coords"].get("threshold", 150))
-    invert = bool(config.data["coords"].get("invert", True))
-    raw_thresh = preprocess_coords_image(img, thresh_val, invert)
-    
-    thresh, split_x = find_split_x_and_clean(raw_thresh)
-    
-    custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
-    try:
-        # 1. Pasamos la imagen completa a Tesseract (mejor contexto de línea) y separamos cada dígito según su posición respecto a split_x
-        boxes_str = pytesseract.image_to_boxes(raw_thresh, config=custom_config).strip()
-        left_chars = []
-        right_chars = []
-        for line in boxes_str.splitlines():
-            parts = line.split()
-            if len(parts) >= 5 and parts[0].isdigit():
-                ch = parts[0]
-                x1, x2 = int(parts[1]), int(parts[3])
-                # Para el primer o último dígito que Tesseract suele expandir al borde, usamos el borde interno
-                center_x = x2 - 5 if x1 <= 2 else (x1 + 5 if x2 >= raw_thresh.shape[1] - 2 else (x1 + x2) // 2)
-                if center_x < split_x:
-                    left_chars.append(ch)
-                else:
-                    right_chars.append(ch)
-                    
-        digits_x = "".join(left_chars)
-        digits_y = "".join(right_chars)
-        
-        # 2. Fallback por mitades separadas si image_to_boxes no detectó ambos lados
-        if not (digits_x and digits_y):
-            left_part = cv2.copyMakeBorder(thresh[:, :split_x], 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
-            right_part = cv2.copyMakeBorder(thresh[:, split_x:], 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
-            if not digits_x:
-                digits_x = "".join(re.findall(r'\d+', pytesseract.image_to_string(left_part, config=custom_config)))
-            if not digits_y:
-                digits_y = "".join(re.findall(r'\d+', pytesseract.image_to_string(right_part, config=custom_config)))
-                
-        raw_text = f"{digits_x} | {digits_y}"
-        
-        if digits_x and digits_y:
-            cx, cy = int(digits_x), int(digits_y)
-            if 0 <= cx <= 255 and 0 <= cy <= 255:
-                return (cx, cy), raw_text, img, thresh, split_x
-        return None, raw_text, img, thresh, split_x
-    except Exception:
-        return None, "", img, thresh, split_x
-
-def coords_process(log_widget):
-    global running, bot_paused, config, stats
-    last_logged = None
-    with mss.mss() as sct:
-        while running:
-            if bot_paused or not config.data["coords"].get("enabled", False) or not config.data["coords"].get("area"):
-                time.sleep(1.0)
-                continue
-            if not TESSERACT_PATH:
-                log_message("❌ OCR Error: No se encontró Tesseract-OCR instalado.", log_widget)
-                time.sleep(5.0)
-                continue
-                
-            coords, raw_text, _, _, _ = read_coords_from_screen(sct)
-            if coords:
-                stats["current_coords"] = coords
-                if stats["spot_coords"] is None:
-                    stats["spot_coords"] = coords
-                    log_message(f"🧭 Spot fijado en coordenadas: X={coords[0]}, Y={coords[1]}", log_widget)
-                elif coords != last_logged:
-                    dx = coords[0] - stats["spot_coords"][0]
-                    dy = coords[1] - stats["spot_coords"][1]
-                    dist = int((dx**2 + dy**2)**0.5)
-                    log_message(f"🧭 Coordenadas: ({coords[0]}, {coords[1]}) | Dist. del Spot: {dist} pasos (ΔX:{dx:+d}, ΔY:{dy:+d})", log_widget)
-                    last_logged = coords
-            time.sleep(1.5)
-
-def calibrate_coords_window(log_widget):
-    area = config.data["coords"].get("area")
-    if not area:
-        messagebox.showwarning("Falta Zona", "Primero marca la 'Zona Coordenadas' en la pantalla del juego.")
-        return
-    if not TESSERACT_PATH:
-        messagebox.showerror("Error Tesseract", "No se encontró Tesseract-OCR en el sistema.")
-        return
-
-    def _run_calibrator():
-        win_name = "Lector MU - Calibracion OCR (Presiona 'q' o ESC para salir)"
-        cv2.namedWindow(win_name, cv2.WINDOW_AUTOSIZE)
-        init_thresh = int(config.data["coords"].get("threshold", 150))
-        init_inv = 1 if config.data["coords"].get("invert", True) else 0
-        
-        cv2.createTrackbar("Umbral", win_name, init_thresh, 255, lambda v: None)
-        cv2.createTrackbar("Invertir", win_name, init_inv, 1, lambda v: None)
-        
-        log_message("🔍 Calibrador OCR abierto. Ajusta las barras y presiona 'q' en la ventana para guardar.", log_widget)
-        
-        with mss.mss() as sct:
-            while True:
-                try:
-                    if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
-                        break
-                except:
-                    break
-                    
-                t_val = cv2.getTrackbarPos("Umbral", win_name)
-                inv_val = bool(cv2.getTrackbarPos("Invertir", win_name))
-                
-                config.data["coords"]["threshold"] = t_val
-                config.data["coords"]["invert"] = inv_val
-                
-                coords, raw_text, img, thresh, split_x = read_coords_from_screen(sct)
-                
-                if img is not None and thresh is not None:
-                    img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                    img_resized = cv2.resize(img_bgr, (thresh.shape[1], thresh.shape[0]))
-                    thresh_bgr = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
-                    
-                    # Dibujamos la línea divisoria inteligente entre X e Y
-                    if split_x is not None:
-                        cv2.line(img_resized, (split_x, 0), (split_x, img_resized.shape[0]), (255, 200, 0), 2)
-                        cv2.line(thresh_bgr, (split_x, 0), (split_x, thresh_bgr.shape[0]), (255, 0, 0), 2)
-                    
-                    combined = np.vstack([img_resized, thresh_bgr])
-                    
-                    # Panel inferior para mostrar el resultado de lectura
-                    info_panel = np.zeros((75, max(combined.shape[1], 380), 3), dtype=np.uint8)
-                    if combined.shape[1] < info_panel.shape[1]:
-                        pad = info_panel.shape[1] - combined.shape[1]
-                        combined = cv2.copyMakeBorder(combined, 0, 0, 0, pad, cv2.BORDER_CONSTANT, value=(0, 0, 0))
-                    
-                    status_color = (0, 255, 0) if coords else (0, 165, 255)
-                    parsed_str = f"X={coords[0]} | Y={coords[1]}" if coords else "Sin detectar (Ajusta Umbral)"
-                    
-                    cv2.putText(info_panel, f"OCR Mitades: '{raw_text}'", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
-                    cv2.putText(info_panel, f"Detectado: {parsed_str}", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2)
-                    
-                    final_view = np.vstack([combined, info_panel])
-                    cv2.imshow(win_name, final_view)
-                
-                key = cv2.waitKey(250) & 0xFF
-                if key == ord('q') or key == 27:
-                    break
-                    
-        cv2.destroyAllWindows()
-        config.save()
-        log_message(f"✅ Calibración OCR guardada (Umbral: {config.data['coords']['threshold']}, Invertir: {config.data['coords']['invert']}).", log_widget)
-
-    threading.Thread(target=_run_calibrator, daemon=True).start()
-
-# ----- Editor de Colores -----
+# ----- Editor de Colores (Con validación de rangos HSV 0..179 / 0..255 - A22) -----
 class ColorEditor(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -1801,8 +1709,8 @@ class ColorEditor(tk.Toplevel):
             frame_lower = tk.Frame(scrollable_frame, bg=MU_FRAME_BG)
             frame_lower.grid(row=row, column=2, padx=5, pady=2)
             hl = tk.Entry(frame_lower, width=4, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG); hl.insert(0, str(conf["lower"][0])); hl.pack(side=tk.LEFT)
-            sl = tk.Entry(frame_lower, width=4, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG); sl.insert(0, str(conf["lower"][1])); sl.pack(side=tk.LEFT)
-            vl = tk.Entry(frame_lower, width=4, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG); vl.insert(0, str(conf["lower"][2])); vl.pack(side=tk.LEFT)
+            sl = tk.Entry(frame_lower, width=4, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG); sl.insert(0, str(conf["lower"][1])); hl.pack(side=tk.LEFT)
+            vl = tk.Entry(frame_lower, width=4, bg=MU_LIST_BG, fg=MU_FG, insertbackground=MU_FG); vl.insert(0, str(conf["lower"][2])); hl.pack(side=tk.LEFT)
             
             frame_upper = tk.Frame(scrollable_frame, bg=MU_FRAME_BG)
             frame_upper.grid(row=row, column=3, padx=5, pady=2)
@@ -1827,9 +1735,9 @@ class ColorEditor(tk.Toplevel):
         
     def update_preview(self, preview_label, lower_entries, upper_entries):
         try:
-            h = (int(lower_entries[0].get()) + int(upper_entries[0].get())) // 2
-            s = (int(lower_entries[1].get()) + int(upper_entries[1].get())) // 2
-            v = (int(lower_entries[2].get()) + int(upper_entries[2].get())) // 2
+            h = max(0, min(179, (int(lower_entries[0].get()) + int(upper_entries[0].get())) // 2))
+            s = max(0, min(255, (int(lower_entries[1].get()) + int(upper_entries[1].get())) // 2))
+            v = max(0, min(255, (int(lower_entries[2].get()) + int(upper_entries[2].get())) // 2))
             hsv = np.uint8([[[h, s, v]]])
             bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
             hex_color = f"#{bgr[2]:02x}{bgr[1]:02x}{bgr[0]:02x}"
@@ -1857,11 +1765,21 @@ class ColorEditor(tk.Toplevel):
 
     def save_and_close(self):
         try:
+            validated = {}
             for name, data in self.entries.items():
                 hl, sl, vl = int(data["lower"][0].get()), int(data["lower"][1].get()), int(data["lower"][2].get())
                 hu, su, vu = int(data["upper"][0].get()), int(data["upper"][1].get()), int(data["upper"][2].get())
-                data["conf_ref"]["lower"] = [hl, sl, vl]
-                data["conf_ref"]["upper"] = [hu, su, vu]
+                hl, hu = max(0, min(179, hl)), max(0, min(179, hu))
+                sl, su = max(0, min(255, sl)), max(0, min(255, su))
+                vl, vu = max(0, min(255, vl)), max(0, min(255, vu))
+                if hl > hu or sl > su or vl > vu:
+                    messagebox.showerror("Rango inválido", f"En '{name}', los valores Mínimos no pueden ser mayores que los Máximos.")
+                    return
+                validated[name] = (data, [hl, sl, vl], [hu, su, vu])
+
+            for name, (data, low_arr, up_arr) in validated.items():
+                data["conf_ref"]["lower"] = low_arr
+                data["conf_ref"]["upper"] = up_arr
                 if data["notify_var"]:
                     data["conf_ref"]["notify"] = data["notify_var"].get()
             config.save()
@@ -1895,7 +1813,10 @@ def select_area(parent):
 
     def on_button_release(event):
         nonlocal selection
-        selection = {"x1": min(start_x, event.x), "y1": min(start_y, event.y), "x2": max(start_x, event.x), "y2": max(start_y, event.y)}
+        x1, x2 = min(start_x, event.x), max(start_x, event.x)
+        y1, y2 = min(start_y, event.y), max(start_y, event.y)
+        if x2 - x1 >= 3 and y2 - y1 >= 3:
+            selection = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
         top.destroy()
 
     canvas.bind("<ButtonPress-1>", on_button_press)
@@ -1907,13 +1828,23 @@ def select_area(parent):
 
 def log_message(msg, log_widget):
     timestamp = time.strftime('%H:%M:%S')
-    log_widget.after(0, lambda: update_log(log_widget, f"[{timestamp}] {msg}\n"))
+    try:
+        log_widget.after(0, lambda: update_log(log_widget, f"[{timestamp}] {msg}\n"))
+    except Exception:
+        pass
 
 def update_log(widget, msg):
-    widget.config(state=tk.NORMAL)
-    widget.insert(tk.END, msg)
-    widget.see(tk.END)
-    widget.config(state=tk.DISABLED)
+    try:
+        widget.config(state=tk.NORMAL)
+        widget.insert(tk.END, msg)
+        # A39 corregido: Limitar el buffer de log a 300 líneas para no consumir memoria en sesiones largas
+        line_count = int(widget.index('end-1c').split('.')[0])
+        if line_count > 300:
+            widget.delete('1.0', f'{line_count - 250}.0')
+        widget.see(tk.END)
+        widget.config(state=tk.DISABLED)
+    except Exception:
+        pass
 
 # ----- Ventana Principal -----
 class Application(tk.Tk):
@@ -1932,8 +1863,9 @@ class Application(tk.Tk):
         self.coords_var = tk.BooleanVar(value=config.data["coords"].get("enabled", False))
         
         self.create_widgets()
-        keyboard.add_hotkey("F5", lambda: start_activity(self.log_text, self.cooldown_label))
-        keyboard.add_hotkey("F6", lambda: stop_activity(self.log_text))
+        # A40 corregido: Ejecutar hotkeys dentro del hilo principal de Tkinter con self.after
+        keyboard.add_hotkey("F5", lambda: self.after(0, lambda: start_activity(self.log_text, self.cooldown_label)))
+        keyboard.add_hotkey("F6", lambda: self.after(0, lambda: stop_activity(self.log_text)))
         
         start_telegram_listener(self.log_text)
         self.update_stats_ui()
@@ -2060,16 +1992,13 @@ class Application(tk.Tk):
         create_mu_button(walk_frame, "⏹", cancel_coordinate_movement, bg="#8B0000").pack(side=tk.LEFT, padx=2)
         create_mu_button(walk_frame, "🎯 Calibrar Ejes", lambda: calibrate_movement_axes(self.log_text, False), bg="#1d5f8c").pack(side=tk.LEFT, padx=3)
         
-        # ---- ESTADÍSTICAS FRAME ----
+        # ---- ESTADÍSTICAS FRAME (A38 corregido: una sola etiqueta coords_lbl) ----
         stats_frame = tk.LabelFrame(self, text=" 📊 Estadísticas de Farmeo ", **style_lf)
         stats_frame.pack(fill=tk.X, padx=15, pady=5)
         
         self.time_lbl = tk.Label(stats_frame, text="⏳ Tiempo Farmeando: 00:00:00", bg=MU_FRAME_BG, fg="#00FFFF", font=("Consolas", 11, "bold"))
         self.time_lbl.pack(pady=2)
 
-        self.coords_lbl = tk.Label(stats_frame, text="📍 Coordenadas: -- | Spot: --", bg=MU_FRAME_BG, fg="#FFA500", font=("Consolas", 10, "bold"))
-        self.coords_lbl.pack(pady=2)
-        
         self.coords_lbl = tk.Label(stats_frame, text="📍 Coordenadas: -- | Spot: --", bg=MU_FRAME_BG, fg="#FFA500", font=("Consolas", 10, "bold"))
         self.coords_lbl.pack(pady=2)
         
@@ -2113,13 +2042,6 @@ class Application(tk.Tk):
             pause_tag = " [PAUSADO]" if manual_pause else ""
             self.time_lbl.config(text=f"⏳ Tiempo Farmeando: {hrs:02d}:{mins:02d}:{secs:02d}{pause_tag}")
             
-            if stats["current_coords"]:
-                cx, cy = stats["current_coords"]
-                sx, sy = stats["spot_coords"] if stats["spot_coords"] else (cx, cy)
-                self.coords_lbl.config(text=f"📍 Coordenadas: ({cx}, {cy}) | Spot Fijado: ({sx}, {sy})")
-            else:
-                self.coords_lbl.config(text="📍 Coordenadas: -- | Spot: --")
-            
             if stats["items"]:
                 items_str = " | ".join([f"{k.capitalize()}: {v}" for k, v in stats["items"].items()])
                 self.items_lbl.config(text=items_str)
@@ -2149,11 +2071,11 @@ class Application(tk.Tk):
     def apply_monitor(self):
         try:
             config.data["monitor"]["enabled"] = self.monitor_var.get()
-            config.data["monitor"]["interval_minutes"] = int(self.mon_min_entry.get())
+            config.data["monitor"]["interval_minutes"] = max(1, int(self.mon_min_entry.get()))
             config.save()
             log_message(f"Monitor configurado: Cada {config.data['monitor']['interval_minutes']}m", self.log_text)
         except ValueError:
-            messagebox.showerror("Error", "Los minutos deben ser un número.")
+            messagebox.showerror("Error", "Los minutos deben ser un número entero mayor a 0.")
 
     def create_pickup_objects_ui(self):
         for widget in self.pickup_objects_frame.winfo_children(): widget.destroy()
@@ -2178,10 +2100,10 @@ class Application(tk.Tk):
             if new_item in config.data["pickup_colors"]:
                 messagebox.showwarning("Atención", "Esa joya ya existe en tu inventario.")
                 return
-            config.data["pickup_colors"][new_item] = {"lower": [0, 100, 100], "upper": [179, 255, 255], "active": True, "notify": True}
+            config.data["pickup_colors"][new_item] = {"lower": [0, 100, 100], "upper": [179, 255, 255], "active": False, "notify": True}
             config.save()
             self.create_pickup_objects_ui()
-            log_message(f"Item '{new_item}' agregado.", self.log_text)
+            log_message(f"Item '{new_item}' agregado (desactivado hasta que ajustes su color en Forja de Colores).", self.log_text)
 
     def update_pickup_object(self, name, var):
         config.data["pickup_colors"][name]["active"] = var.get()
@@ -2238,11 +2160,15 @@ class Application(tk.Tk):
 
     def apply_cooldown(self):
         try:
-            config.data["cooldown"] = int(self.cooldown_entry.get())
+            cd_val = max(5, int(self.cooldown_entry.get()))
+            config.data["cooldown"] = cd_val
+            self.cooldown_entry.delete(0, tk.END)
+            self.cooldown_entry.insert(0, str(cd_val))
             config.save()
             self.update_config_status()
             log_message(f"Cooldown actualizado a {config.data['cooldown']}s", self.log_text)
-        except: pass
+        except Exception:
+            pass
 
     def save_config(self):
         self.apply_monitor() 
@@ -2252,31 +2178,38 @@ class Application(tk.Tk):
     def update_config_status(self):
         self.skill_button.config(bg="#006400" if config.data["buff_skills"] else MU_BTN_BG)
         self.player_button.config(bg="#006400" if config.data["buff_players"] else MU_BTN_BG)
-        self.pickup_area_button.config(bg="#006400" if config.data.get("pickup_area") else MU_BTN_BG)
-        self.attack_area_button.config(bg="#006400" if config.data.get("attack_area") else MU_BTN_BG)
-        self.monitor_area_button.config(bg="#006400" if config.data["monitor"].get("area") else MU_BTN_BG)
-        self.monitor_btn_button.config(bg="#006400" if config.data["monitor"].get("button_area") else MU_BTN_BG)
-        self.coords_area_button.config(bg="#006400" if config.data["coords"].get("area") else MU_BTN_BG)
-        self.char_center_button.config(bg="#006400" if config.data["coords"].get("char_center") else MU_BTN_BG)
+        self.pickup_area_button.config(bg="#006400" if is_valid_roi(config.data.get("pickup_area")) else MU_BTN_BG)
+        self.attack_area_button.config(bg="#006400" if is_valid_roi(config.data.get("attack_area")) else MU_BTN_BG)
+        self.monitor_area_button.config(bg="#006400" if is_valid_roi(config.data["monitor"].get("area")) else MU_BTN_BG)
+        self.monitor_btn_button.config(bg="#006400" if is_valid_roi(config.data["monitor"].get("button_area")) else MU_BTN_BG)
+        self.coords_area_button.config(bg="#006400" if is_valid_roi(config.data["coords"].get("area")) else MU_BTN_BG)
+        self.char_center_button.config(bg="#006400" if is_valid_roi(config.data["coords"].get("char_center")) else MU_BTN_BG)
 
     def on_close(self):
         cancel_coordinate_movement()
         stop_activity(self.log_text)
+        release_all_mouse_buttons()
+        try:
+            keyboard.unhook_all_hotkeys()
+        except Exception:
+            pass
         self.destroy()
 
 def start_activity(log_widget, cd_label):
-    global running, buff_thread, pickup_thread, attack_thread, monitor_thread, coords_thread, stats
+    global running, session_id, buff_thread, pickup_thread, attack_thread, monitor_thread, coords_thread, stats
     global pickup_active, moving_to_coords, buff_active, photo_active, manual_pause
     
-    if config.data["monitor"].get("enabled", False) and not config.data["monitor"].get("button_area"):
+    if config.data["monitor"].get("enabled", False) and not is_valid_roi(config.data["monitor"].get("button_area")):
         log_message("❌ Error: Monitor activado pero falta marcar el 'Botón Inventario'.", log_widget)
         return
 
-    if config.data["coords"].get("enabled", False) and not config.data["coords"].get("area"):
+    if config.data["coords"].get("enabled", False) and not is_valid_roi(config.data["coords"].get("area")):
         log_message("❌ Error: Lector de coordenadas activado pero falta marcar la 'Zona Coords'.", log_widget)
         return
         
     if not running:
+        session_id += 1
+        my_session = session_id
         running = True
         pickup_active = False
         buff_active = False
@@ -2285,20 +2218,22 @@ def start_activity(log_widget, cd_label):
         stats["start_time"] = time.time()
         stats["spot_coords"] = None
         stats["current_coords"] = None
-        buff_thread = threading.Thread(target=buffing_process, args=(log_widget, cd_label), daemon=True); buff_thread.start()
-        pickup_thread = threading.Thread(target=pickup_process, args=(log_widget,), daemon=True); pickup_thread.start()
-        attack_thread = threading.Thread(target=attack_process, args=(log_widget,), daemon=True); attack_thread.start()
-        monitor_thread = threading.Thread(target=monitor_process, args=(log_widget,), daemon=True); monitor_thread.start()
-        coords_thread = threading.Thread(target=coords_process, args=(log_widget,), daemon=True); coords_thread.start()
+        buff_thread = threading.Thread(target=buffing_process, args=(log_widget, cd_label, my_session), daemon=True); buff_thread.start()
+        pickup_thread = threading.Thread(target=pickup_process, args=(log_widget, my_session), daemon=True); pickup_thread.start()
+        attack_thread = threading.Thread(target=attack_process, args=(log_widget, my_session), daemon=True); attack_thread.start()
+        monitor_thread = threading.Thread(target=monitor_process, args=(log_widget, my_session), daemon=True); monitor_thread.start()
+        coords_thread = threading.Thread(target=coords_process, args=(log_widget, my_session), daemon=True); coords_thread.start()
         
         log_message("=== MACRO INICIADA (F5) [Motor de 5 Prioridades Activo] ===", log_widget)
         if config.data["telegram"]["enabled"]:
             send_telegram("⚔️ Bot iniciado (Prioridades: 1° Pickup > 2° Caminar > 3° Buff > 4° Ataque > 5° Foto).", with_keyboard=True)
 
 def stop_activity(log_widget):
-    global running, pickup_active, buff_active, photo_active, manual_pause
+    global running, session_id, pickup_active, buff_active, photo_active, manual_pause
     cancel_coordinate_movement()
+    release_all_mouse_buttons()
     if running:
+        session_id += 1
         running = False
         pickup_active = False
         buff_active = False
